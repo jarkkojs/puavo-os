@@ -11,22 +11,34 @@ msgstr ""
 "Plural-Forms: nplurals=2; plural=(n != 1);\n"
 "X-Generator: Lokalize 2.0\n"
 
-#: puavo-exam-browser:52
-msgid "Exam server:"
-msgstr "Koepalvelin:"
+#: puavo-exam-browser:54
+msgid "Joining an exam"
+msgstr "Kokeeseen liittyminen"
 
 #: puavo-exam-browser:56
-msgid "Go"
-msgstr "Avaa"
+msgid "Please type a web address of the exam"
+msgstr "Syötä kenttään kokeen verkko-osoite"
 
-#: puavo-exam-browser:137
+#: puavo-exam-browser:71
+msgid "Start the exam"
+msgstr "Aloita koe"
+
+#: puavo-exam-browser:169
 msgid "Puavo Exam Browser"
 msgstr "Puavo-Koeselain"
 
-#: puavo-exam-browser:173
+#: puavo-exam-browser:205
 msgid "Are you sure you want to close?"
 msgstr "Oletko varma että haluat sulkea selaimen?"
 
-#: puavo-exam-browser:176
+#: puavo-exam-browser:208
 msgid "To exit the exam use the menu on the right of the bottom panel."
 msgstr "Poistuaksesi kokeesta käytä alapaneelin menua oikealla."
+
+#: puavo-exam-browser:317
+msgid "Error in connecting to an exam:"
+msgstr "Virhe kokeeseen liityttäessä:"
+
+#: puavo-exam-browser:318
+msgid "Try again or contact your support services."
+msgstr "Yritä uudelleen tai ole yhteydessä tukipalveluun."

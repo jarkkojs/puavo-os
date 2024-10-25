@@ -47,31 +47,63 @@ class UriRequestDialog():
 
 
   def setup(self):
-    self.alignment = Gtk.Alignment(xalign=0.5, yalign=0.5, xscale=0, yscale=0, name='request_uri')
-    self.vbox = Gtk.Box()
-    self.address_label = Gtk.Label.new(_tr('Exam server:'))
+    self.alignment = Gtk.Alignment(xalign=0.5, yalign=0.5,
+                                   xscale=0, yscale=0, name='request_uri')
+
+    self.vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+    self.address_title = Gtk.Label.new(_tr('Joining an exam'))
+    self.address_info \
+      = Gtk.Label.new(_tr('Please type a web address of the exam'))
+
+    self.address_alignment = Gtk.Alignment(xalign=0.5, xscale=0)
+    self.address_box = Gtk.Box()
     self.address_entry = Gtk.Entry()
     self.address_entry.set_width_chars(40)
     self.address_entry.connect('activate', self.on_change_uri)
-    self.go_button = Gtk.Button.new_with_label(_tr('Go'))
-    self.go_button.connect('clicked', self.on_change_uri)
+    self.address_box.pack_start(self.address_entry, False, False, 0)
+    self.address_alignment.add(self.address_box)
 
-    self.vbox.pack_start(self.address_label, False, False, 10)
-    self.vbox.pack_start(self.address_entry, False, False, 10)
-    self.vbox.pack_start(self.go_button,     False, False, 10)
+    self.start_error_main = Gtk.Label.new()
+    self.start_error_sub  = Gtk.Label.new()
+
+    self.button_alignment = Gtk.Alignment(xalign=0.5, xscale=0)
+    self.button_box = Gtk.Box()
+    self.start_button = Gtk.Button.new_with_label(_tr('Start the exam'))
+    self.start_button.connect('clicked', self.on_change_uri)
+    self.button_box.pack_start(self.start_button, False, False, 0)
+    self.button_alignment.add(self.button_box)
+
+    self.vbox.pack_start(self.address_title,     False, False, 30)
+    self.vbox.pack_start(self.address_info,      False, False,  5)
+    self.vbox.pack_start(self.address_alignment, False, False,  0)
+    self.vbox.pack_start(self.start_error_main,  False, False,  5)
+    self.vbox.pack_start(self.start_error_sub,   False, False,  5)
+    self.vbox.pack_start(self.button_alignment,  False, False, 10)
     self.alignment.add(self.vbox)
 
     self.exam_browser.win.add(self.alignment)
     self.exam_browser.win.show_all()
 
 
+
   def on_change_uri(self, widget):
+    self.start_error_main.set_text('')
+    self.start_error_sub.set_text('')
     server = self.address_entry.get_text()
     self.exam_browser.try_server(server)
 
 
   def remove(self):
     self.alignment.destroy()
+
+
+  def set_error_msg(self, mainmsg, submsg, errormsg):
+    main_markup = '<span foreground="red">%s</span>' \
+                    % (GLib.markup_escape_text(mainmsg + ' ' + errormsg))
+    sub_markup  = '<span foreground="red">%s</span>' \
+                    % GLib.markup_escape_text(submsg)
+    self.start_error_main.set_markup(main_markup)
+    self.start_error_sub.set_markup(sub_markup)
 
 
 class PuavoExamBrowser():
@@ -282,6 +314,12 @@ class PuavoExamBrowser():
 
 
   def on_load_failed(self, widget, load_event, failing_uri, error):
+    error_mainmsg = _tr('Error in connecting to an exam:')
+    error_submsg  = _tr('Try again or contact your support services.')
+    error_errmsg  = '%s' % error
+    self.uri_request_dialog.set_error_msg(error_mainmsg, error_submsg,
+                                          error_errmsg)
+
     self.load_failed = True
     return True
 
