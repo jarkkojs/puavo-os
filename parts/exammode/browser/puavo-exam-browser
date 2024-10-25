@@ -11,7 +11,9 @@ import gi
 gi.require_version('Gdk', '3.0')
 gi.require_version('Gtk', '3.0')
 gi.require_version('WebKit2', '4.1')
-from gi.repository import Gdk, Gtk, WebKit2
+from gi.repository import Gdk, GLib, Gtk, WebKit2
+
+from types import SimpleNamespace
 
 gettext.bindtextdomain('puavo-exam-browser', '/usr/share/locale')
 gettext.textdomain('puavo-exam-browser')
@@ -85,10 +87,14 @@ class PuavoExamBrowser():
 
   def __init__(self):
     os.makedirs(self.BROWSER_DIR, exist_ok=True)
+    self.reload_scheduled_id = None
     self.server = None
     self.server_candidate = None
+    self.uri = None
+    self.uri_candidate = None
     self.zoom_level_index = 6
     self.load_state()
+    self.quirks = SimpleNamespace(refresh_on_resize=False)
     self.win = Gtk.Window()
 
 
@@ -134,8 +140,9 @@ class PuavoExamBrowser():
 
     self.is_fullscreen = False
 
-    self.win.connect('delete-event', self.on_delete)
-    self.win.connect('key-press-event', self.on_keypress)
+    self.win.connect('delete-event',       self.on_delete)
+    self.win.connect('key-press-event',    self.on_keypress)
+    self.win.connect('size-allocate',      self.on_window_resize)
     self.win.connect('window-state-event', self.on_window_state)
 
     self.list_of_uris_to_try = []
@@ -211,6 +218,19 @@ class PuavoExamBrowser():
     return False
 
 
+  def on_window_resize(self, widget, event):
+    if self.quirks.refresh_on_resize and self.webview_shown:
+      if self.reload_scheduled_id:
+        GLib.source_remove(self.reload_scheduled_id)
+      self.reload_scheduled_id = GLib.timeout_add(1000, self.reload_uri)
+
+
+  def reload_uri(self):
+    self.reload_scheduled_id = None
+    self.webview.load_uri(self.uri)
+    return False
+
+
   def on_window_state(self, widget, event):
     self.is_fullscreen \
       = bool(event.new_window_state & Gdk.WindowState.FULLSCREEN)
@@ -238,6 +258,7 @@ class PuavoExamBrowser():
     next_uri, *self.list_of_uris_to_try = self.list_of_uris_to_try
 
     self.load_failed = False
+    self.uri_candidate = next_uri
     self.webview.load_uri(next_uri)
 
 
@@ -247,8 +268,9 @@ class PuavoExamBrowser():
     # This text "Koetilan palvelin" should *not* be translated here,
     # it is used to identify a particular type of (Finnish) exam server.
     if auth_request.get_realm() == 'Koetilan palvelin':
-      abitti_uri = 'https://%s:8010' % '10.249.14.227' # auth_request.get_host()
+      abitti_uri = 'https://%s:8010' % auth_request.get_host()
       self.list_of_uris_to_try = [ abitti_uri ]
+      self.quirks.refresh_on_resize = True
       self.webview.stop_loading()
 
     return True
@@ -277,6 +299,7 @@ class PuavoExamBrowser():
       self.webview_shown = True
 
     self.server = self.server_candidate
+    self.uri = self.uri_candidate
     self.save_state()
 
     return True
