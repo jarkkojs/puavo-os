@@ -59,7 +59,8 @@ class UriRequestDialog():
     self.address_box = Gtk.Box()
     self.address_entry = Gtk.Entry()
     self.address_entry.set_width_chars(40)
-    self.address_entry.connect('activate', self.on_change_uri)
+    self.address_entry.connect('activate', self.on_entry_activation)
+    self.address_entry.connect('changed', self.on_entry_change)
     self.address_box.pack_start(self.address_entry, False, False, 0)
     self.address_alignment.add(self.address_box)
 
@@ -69,7 +70,7 @@ class UriRequestDialog():
     self.button_alignment = Gtk.Alignment(xalign=0.5, xscale=0)
     self.button_box = Gtk.Box()
     self.start_button = Gtk.Button.new_with_label(_tr('Start the exam'))
-    self.start_button.connect('clicked', self.on_change_uri)
+    self.start_button.connect('clicked', self.on_entry_activation)
     self.button_box.pack_start(self.start_button, False, False, 0)
     self.button_alignment.add(self.button_box)
 
@@ -86,11 +87,20 @@ class UriRequestDialog():
 
 
 
-  def on_change_uri(self, widget):
+  def cleanup_error_msg(self):
     self.start_error_main.set_text('')
     self.start_error_sub.set_text('')
+
+
+  def on_entry_activation(self, widget):
+    self.cleanup_error_msg()
     server = self.address_entry.get_text()
     self.exam_browser.try_server(server)
+
+
+  def on_entry_change(self, widget):
+    print('on entry change')
+    self.cleanup_error_msg()
 
 
   def remove(self):
@@ -263,7 +273,7 @@ class PuavoExamBrowser():
   def reload_uri(self):
     if self.uri:
       self.reload_scheduled_id = None
-      self.webview.load_uri(self.uri)
+      self.webview.reload()
 
     return False
 
@@ -314,11 +324,28 @@ class PuavoExamBrowser():
 
 
   def on_load_failed(self, widget, load_event, failing_uri, error):
-    error_mainmsg = _tr('Error in connecting to an exam:')
-    error_submsg  = _tr('Try again or contact your support services.')
-    error_errmsg  = '%s' % error
-    self.uri_request_dialog.set_error_msg(error_mainmsg, error_submsg,
-                                          error_errmsg)
+    syslog.syslog(syslog.LOG_WARNING,
+                  'webpage %s load failed: %s' % (failing_uri, error))
+
+    if self.uri_request_dialog and len(self.list_of_uris_to_try) == 0:
+      # if this was the last uri to try, show error
+      if error == WebKit2.NetworkError.CANCELLED:
+        self.uri_request_dialog.cleanup_error_msg()
+        return
+
+      error_mainmsg = _tr('Error in connecting to an exam:')
+      error_submsg  = _tr('Try again or contact your support services.')
+      if error.domain == 'g-resolver-error-quark':
+        error_errmsg = _tr('error in resolving address')
+      elif error.domain == 'g-io-error-quark':
+        error_errmsg = _tr('connection error')
+      else:
+        syslog.syslog(syslog.LOG_WARNING,
+                      'unexpected error with error domain "%s"' % error.domain)
+        error_errmsg = _tr('unexpected error')
+
+      self.uri_request_dialog.set_error_msg(error_mainmsg, error_submsg,
+                                            error_errmsg)
 
     self.load_failed = True
     return True

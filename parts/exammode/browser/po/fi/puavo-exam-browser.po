@@ -19,26 +19,38 @@ msgstr "Kokeeseen liittyminen"
 msgid "Please type a web address of the exam"
 msgstr "Syötä kenttään kokeen verkko-osoite"
 
-#: puavo-exam-browser:71
+#: puavo-exam-browser:72
 msgid "Start the exam"
 msgstr "Aloita koe"
 
-#: puavo-exam-browser:169
+#: puavo-exam-browser:179
 msgid "Puavo Exam Browser"
 msgstr "Puavo-Koeselain"
 
-#: puavo-exam-browser:205
+#: puavo-exam-browser:215
 msgid "Are you sure you want to close?"
 msgstr "Oletko varma että haluat sulkea selaimen?"
 
-#: puavo-exam-browser:208
+#: puavo-exam-browser:218
 msgid "To exit the exam use the menu on the right of the bottom panel."
 msgstr "Poistuaksesi kokeesta käytä alapaneelin menua oikealla."
 
-#: puavo-exam-browser:317
+#: puavo-exam-browser:336
 msgid "Error in connecting to an exam:"
 msgstr "Virhe kokeeseen liityttäessä:"
 
-#: puavo-exam-browser:318
+#: puavo-exam-browser:337
 msgid "Try again or contact your support services."
 msgstr "Yritä uudelleen tai ole yhteydessä tukipalveluun."
+
+#: puavo-exam-browser:339
+msgid "error in resolving address"
+msgstr "virhe osoitteenselvityksessä"
+
+#: puavo-exam-browser:341
+msgid "connection error"
+msgstr "yhteysvirhe"
+
+#: puavo-exam-browser:345
+msgid "unexpected error"
+msgstr "odottamaton virhe"
