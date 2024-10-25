@@ -208,6 +208,9 @@ class PuavoExamBrowser():
     if key == 'Escape':
       self.win.unfullscreen()
       return True
+    if key == 'F5' or (has_control and key == 'r'):
+      self.reload_uri()
+      return True
     if key == 'F11':
       if self.is_fullscreen:
         self.win.unfullscreen()
@@ -226,8 +229,10 @@ class PuavoExamBrowser():
 
 
   def reload_uri(self):
-    self.reload_scheduled_id = None
-    self.webview.load_uri(self.uri)
+    if self.uri:
+      self.reload_scheduled_id = None
+      self.webview.load_uri(self.uri)
+
     return False
 
 
