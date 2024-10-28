@@ -36,7 +36,7 @@ SB_BUTTONS = {
     },
     "exam_mode": {
         "title": "sb_exam_mode",
-        "icon": "/usr/share/icons/Adwaita/64x64/actions/document-edit-symbolic.symbolic.png",
+        "icon": "/usr/share/icons/oxygen/base/64x64/actions/document-edit.png",
         "command": {
             "type": "command",
             "args": "puavo-exammode-ctrl start",
