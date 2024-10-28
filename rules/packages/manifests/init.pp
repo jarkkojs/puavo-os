@@ -822,16 +822,16 @@ class packages {
 		      , $virtualbox_module ]
 
   packages::kernels::kernel_package {
-    '5.10.0-32-amd64':
+    '5.10.0-33-amd64':
       dkms_modules => $all_dkms_modules,
-      package_name => 'linux-image-5.10.0-32-amd64';
+      package_name => 'linux-image-5.10.0-33-amd64';
 
     # XXX The $r8168_module works with 5.18 but the version
     # XXX in backports (in 2022-10-24) does not work with 5.19.
-    '6.1.0-0.deb11.25-amd64':
+    '6.1.0-0.deb11.26-amd64':
       dkms_modules => [ $broadcom_sta_dkms_module
                       , $virtualbox_module ],
-      package_name => 'linux-image-6.1.0-0.deb11.25-amd64-unsigned';
+      package_name => 'linux-image-6.1.0-0.deb11.26-amd64-unsigned';
   }
 
   # Packages which are not restricted per se, but which are required by
