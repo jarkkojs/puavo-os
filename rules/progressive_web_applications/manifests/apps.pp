@@ -6,6 +6,11 @@ class progressive_web_applications::apps {
       app_id => 'ocgiedgmgfoocelalnmphikjnbgnnmdb',
       url    => 'https://graphicalanalysis.app';
 
+    'spotify':
+      app_id  => 'pjibgclleladliembfgfagdaldikeohf',
+      browser => 'chrome',
+      url     => 'https://open.spotify.com/?utm_source=pwa_install';
+
     'teams':
       app_id  => 'cifhbcnohmdccbgoicgdjpfamggdegmo',
       browser => 'chrome',
