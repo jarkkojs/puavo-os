@@ -1,2 +1,25 @@
 # parts of the test suite, not installed
 openjdk-11 source: source-is-missing
+
+# openjdk packages use old standards version as they need to support
+# backports
+openjdk-11 source: newer-standards-version
+openjdk-11 source: uses-debhelper-compat-file
+openjdk-11 source: package-uses-old-debhelper-compat-version
+openjdk-11 source: package-uses-deprecated-debhelper-compat-version
+
+# suppress warnings about experimental patches
+openjdk-11 source: patch-file-present-but-not-mentioned-in-series
+
+# jtreg test suite contains pre-built jars
+openjdk-11 source: source-contains-prebuilt-java-object
+
+# upstream code formatting
+openjdk-11 source: very-long-line-length-in-source-file
+
+# false positive, jtreg tests contain example/ directories
+openjdk-11 source: package-does-not-install-examples
+
+# chromium and firefox snaps are unable to load scripts from /usr/share/javascript
+# LP: 2032992
+openjdk-11 source: source-contains-prebuilt-javascript-object

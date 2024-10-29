@@ -103,7 +103,7 @@ for i in 0 1 2; do
     -retain:none \
     -ignore:quiet \
     -agentvm \
-    -timeout:5 \
+    -timeout:10 \
     -workDir:"${jtwork_dir}" \
     -reportDir:"${report_dir}" \
     -jdk:${JDK_TO_TEST} \

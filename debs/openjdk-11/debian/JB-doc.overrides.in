@@ -1,0 +1,12 @@
+# Override due to upstream copyright
+@basename@-doc binary: spelling-error-in-copyright "GNU Public License" "GNU General Public License"
+@basename@-doc: spelling-error-in-copyright "GNU Library Public License" "GNU Library General Public License"
+
+# chromium and firefox snaps are unable to load scripts from /usr/share/javascript
+# LP: 2032992
+@basename@-doc binary: embedded-javascript-library
+
+# repeated path segments due to upstream code structure:
+# usr/share/doc/openjdk-11-jre-headless/api/jdk.scripting.nashorn/jdk/nashorn/api/
+# usr/share/doc/openjdk-11-jre-headless/api/jquery/external/jquery/
+@basename@-doc binary: repeated-path-segment

@@ -1,0 +1,2 @@
+# repeated lib due to upstream implementation directory layout
+@basename@-jdk-headless binary: repeated-path-segment

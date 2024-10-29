@@ -1,7 +1,7 @@
 SOURCE_DIR=$1
 VERSION=$2
 for LEGAL_DIR in `find $SOURCE_DIR/src -name legal`; do
-  for COMMON_LICENSE in "### Apache 2.0 License" "### GPL v2" ; do
+  for COMMON_LICENSE in "### Apache 2.0 License" "### GPL v2" "### GPL version 3"; do
     for FILE in `grep -Rl "${COMMON_LICENSE}" $LEGAL_DIR`; do
       sed -i "/^${COMMON_LICENSE}/,/^###/{/^###/!{d}}" $FILE
       sed -i "s/${COMMON_LICENSE}/${COMMON_LICENSE}: Refer to the copy under \/usr\/share\/common-licenses\n/g" $FILE

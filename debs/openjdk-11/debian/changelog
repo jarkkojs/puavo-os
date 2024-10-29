@@ -1,15 +1,42 @@
-openjdk-11 (11.0.24+8-2~deb11u1+puavo1) bullseye; urgency=medium
+openjdk-11 (11.0.25+9-1~deb11u1) bullseye-security; urgency=medium
 
-  * Build with our patches.
+  * Non-maintainer upload by the LTS Team.
+  * Backport to bullseye.
+  * Disable tests, jtreg7 is not available on bullseye.
 
- -- Puavo Org <dev@opinsys.fi>  Fri, 15 Sep 2023 14:24:12 +0300
+ -- Emilio Pozuelo Monfort <pochu@debian.org>  Mon, 21 Oct 2024 14:21:02 +0200
 
-openjdk-11 (11.0.24+8-2~deb11u1) bullseye-security; urgency=medium
+openjdk-11 (11.0.25+9-1) unstable; urgency=high
 
-  * Rebuild for bullseye
-  * Skip tests, no jtreg7 for bullseye
+  * OpenJDK 11.0.25 release, build 9.
+    - CVE-2024-21208
+    - CVE-2024-21210
+    - CVE-2024-21217
+    - CVE-2024-21235
 
- -- Moritz Muehlenhoff <jmm@debian.org>  Thu, 01 Aug 2024 19:42:32 +0200
+  [ Vladimir Petko ]
+  * d/rules: do not include dtrace support for S390x (JDK-8305174).
+  * d/t/problems.csv: Disable jdk/sun/security/util/Debug/DebugOptions.java
+    due to JDK-8339713.
+
+ -- Matthias Klose <doko@ubuntu.com>  Thu, 17 Oct 2024 10:56:29 +0200
+
+openjdk-11 (11.0.25~5ea-1) unstable; urgency=medium
+
+  * OpenJDK 11.0.25+5 build (early access).
+
+  [ Vladimir Petko ]
+  * d/changelog: Remove trailing empty line.
+  * d/copyright-generator/strip-common-licenses.sh: Add GPLv3 to the
+    list of common licenses.
+  * d/JB-*.overrides.in, d/s/lintian-overrides: Update lintian overrides.
+  * d/p/jdk-8334895-proposed.patch: Fix typo in the patch description.
+  * d/copyright: Regenerate.
+  * d/t/problemlist.csv: Update problemlist.csv for July release
+  * d/t/jtreg-autopkgtest.{in,sh}: Increase jtreg test timeouts.
+  * Enable dtrace support.
+
+ -- Matthias Klose <doko@ubuntu.com>  Mon, 09 Sep 2024 16:06:26 +0200
 
 openjdk-11 (11.0.24+8-2) unstable; urgency=medium
 
@@ -164,6 +191,12 @@ openjdk-11 (11.0.22~6ea-1) unstable; urgency=medium
   * d/copyright: Fix source location.
 
  -- Matthias Klose <doko@ubuntu.com>  Tue, 26 Dec 2023 13:23:50 +0100
+
+openjdk-11 (11.0.21+9-1~deb11u1) bullseye-security; urgency=medium
+
+  * Backport to bullseye.
+
+ -- Emilio Pozuelo Monfort <pochu@debian.org>  Fri, 27 Oct 2023 08:54:07 +0200
 
 openjdk-11 (11.0.21+9-1) unstable; urgency=high
 
@@ -5827,4 +5860,3 @@ icedtea (7~b14-20070704-1) unstable; urgency=low
   * Initial version.
 
  -- Michael Koch <konqueror@gmx.de>  Wed, 04 Jul 2007 08:25:31 -0100
-

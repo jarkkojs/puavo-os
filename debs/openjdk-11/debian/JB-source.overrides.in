@@ -1,0 +1,2 @@
+# repeated lib due to upstream implementation directory layout
+@basename@-source binary: repeated-path-segment
