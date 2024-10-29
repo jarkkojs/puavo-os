@@ -1423,6 +1423,10 @@
         },
         "spotify": {
             "name": "Spotify",
+            "tags": "default"
+        },
+        "spotify-app": {
+            "name": "Spotify App",
             "tags": "default",
             "puavopkg": {
                 "id": "spotify-client"
