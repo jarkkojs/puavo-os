@@ -1819,6 +1819,7 @@
                 "vlc",
                 "org.kde.kaffeine",
                 "spotify",
+                "spotify-app",
                 "org.gnome.Cheese",
                 "org.gnome.SoundRecorder",
                 "kenavision",
@@ -2320,6 +2321,7 @@
                 "mscore3",
                 "musescore-appimage",
                 "spotify",
+                "spotify-app",
                 "libreoffice-writer",
                 "kahoot",
                 "youtube"
