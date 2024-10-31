@@ -362,14 +362,14 @@ class Series
 
   def remove_diffs_to_free_diskspace(syncfile)
     diffs_in_series = @by_id.values.map { |image| image.diffs }.flatten.uniq
-    diffs_in_series_cunsuming_diskspace \
+    diffs_in_series_consuming_diskspace \
       = diffs_in_series.select { |d| d.inplace? }
 
     current_free_diskspace = syncfile.lookup_free_diskspace()
     return false unless current_free_diskspace
 
     space_currently_taken_by_diffs \
-      = diffs_in_series_cunsuming_diskspace.map(&:size).sum
+      = diffs_in_series_consuming_diskspace.map(&:size).sum
 
     space_potentially_available \
       = space_currently_taken_by_diffs + current_free_diskspace
@@ -383,7 +383,7 @@ class Series
     # Magical AI priorization of the diff files.  Files with the biggest
     # priority number are to be deleted first.
     diffs_sorted_by_priority \
-      = diffs_in_series_cunsuming_diskspace.select { |d| d.inplace? } \
+      = diffs_in_series_consuming_diskspace.select { |d| d.inplace? } \
          .sort_by { |d| d.in_use == 0 ? 999999999999 : d.size / d.in_use } \
          .reverse
 
