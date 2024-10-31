@@ -1,0 +1,237 @@
+#!/usr/bin/ruby
+
+require 'highline/import'
+require 'net/http'
+require 'puavo/etc'
+require 'puavo/rest-client'
+require 'syslog'
+
+def log(level, channel, priority, msg, color)
+  logmsg = prefixed_logmsg(level, msg)
+
+  Syslog.log(priority, "%s", logmsg)
+
+  outmsg = color  ?  HighLine.new.color(logmsg, color)  :  logmsg
+  channel.puts(outmsg)
+end
+
+def prefixed_logmsg(level, msg)
+  spacecount = [5, [5-level, 0].max ].min       # (5-level between [0,5])
+  arrowcount = [0, [  level, 5].min ].max       # (  level between [0,5])
+  return "%s %s" % [ (" " * spacecount  +  ">" * arrowcount),
+                     msg ]
+end
+
+def info(level, msg, color=nil)
+  log(level, STDOUT, Syslog::LOG_INFO, msg, color)
+end
+
+def warning(level, msg)
+  log(level, STDERR, Syslog::LOG_WARNING, "WARNING: #{ msg }", HighLine::RED)
+end
+
+class SyncState
+  StatesAndMessages = {
+    :missing    => "%s is missing",
+    :downloaded => "%s has been downloaded",
+    :unverified => "%s is unverified",
+    :inplace    => "%s is inplace",
+    :deleted    => "%s has been deleted",
+    :unknown    => "%s state is unknown",
+  }
+
+  def initialize()
+    @state = :unknown
+  end
+end
+
+class SyncFile
+  def initialize(filename, dir=nil)
+    raise 'filename is not set' \
+      unless filename && filename.kind_of?(String) && !filename.empty?
+
+    @basedir  = dir || self.class.basedir
+    @filename = File.basename(filename)
+  end
+end
+
+class SyncFileWithMetadata < SyncFile
+  def initialize(cksum, filename, sha256, size, urls)
+    super(filename)
+
+    raise 'sha256 is not set' \
+      unless sha256 && sha256.kind_of?(String) && !sha256.empty?
+    raise 'size is not set' \
+      unless size && size.kind_of?(Integer)
+    raise 'urls are not set' \
+      unless urls && urls.kind_of?(Array) && !urls.empty? \
+                  && urls.all? { |url| url.kind_of?(String) }
+
+    @cksum  = cksum
+    @sha256 = sha256
+    @size   = size
+    @urls   = urls
+
+    @in_use        = 0
+    @mtime         = nil
+    @state         = SyncState.new
+    @verified      = false
+    @verify_result = false
+  end
+end
+
+class Image < SyncFileWithMetadata
+  def initialize(cksum, filename, id, sha256, size, urls, version, series)
+    super(cksum, filename, sha256, size, urls)
+
+    raise 'id is not set' \
+      unless id && id.kind_of?(String) && !id.empty?
+    raise 'version is not set' \
+      unless version && version.kind_of?(String) && !version.empty?
+
+    @id = id
+    @series = series
+    @version = version
+
+    @diffs_from_by_version = {}
+  end
+
+  def self.basedir; $config[:download_path]; end
+end
+
+class Series
+  attr_reader :series_name
+
+  def initialize(name)
+    @series_name = name
+
+    @by_id = {}
+    @by_version = {}
+  end
+end
+
+module SeriesControl
+  # Load series json definition files
+  def self.fetch_and_parse_series_data(source_url)
+    info(5, "Using image series source url #{ source_url }")
+
+    uri = URI.parse(source_url)
+
+    http = Net::HTTP.new(uri.host, uri.port)
+    http.ca_file = '/etc/puavo-conf/rootca.pem'
+    http.verify_mode = OpenSSL::SSL::VERIFY_PEER
+    http.use_ssl = true
+
+    series_by_name = {}
+    http.request_get(uri.path) do |response|
+      if !response.kind_of?(Net::HTTPOK) then
+        # Do not let a failed fetch slip out as empty series... otherwise
+        # temporary download failure might result in removing all images/diffs
+        # in this series.
+        raise "Error in fetching #{ source_url }," \
+                + " response code #{ response.code }"
+      end
+
+      series_by_name = parse_series_data( JSON.parse( response.body ) )
+    end
+
+    return series_by_name
+  end
+
+  def self.get_all_series(bootserver_data)
+    all_series_list = []
+    series_urls = Array(bootserver_data['image_series_source_urls'])
+
+    if series_urls.empty? then
+      info(5, "No series urls were defined")
+    else
+      series_urls.each do |series_url|
+        all_series_list << fetch_and_parse_series_data(series_url)
+      end
+    end
+
+    all_series = all_series_list.reduce(&:merge) || []
+
+    if all_series.empty? then
+      raise "No series information, can not do anything"
+    end
+
+    return all_series.values
+  end
+
+  def self.get_bootserver_data
+    etc = PuavoEtc.new
+    client = PuavoRestClient.new :auth => :etc
+
+    url = "/v3/boot_servers/#{ etc.hostname }"
+
+    info(5, "Loading bootserver data from puavo-rest url: #{ url }")
+    res = client.get(url)
+    return res.parse()
+  end
+
+  def self.parse_series_data(series_data)
+    series_by_name = Hash.new
+
+    series_data.each_pair do |series_name, data|
+      series = Series.new(series_name)
+
+      data['images'].each do |imagedata|
+        image = Image.new(imagedata['cksum'],
+                          imagedata['filename'],
+                          imagedata['id'],
+                          imagedata['sha256'],
+                          imagedata['size'],
+                          imagedata['urls'],
+                          imagedata['version'],
+                          series)
+        series.add_image(image)
+      end
+
+      data['images'].each do |image|
+        if image['diffs'] then
+          image['diffs'].each do |diffdata|
+            series.add_diff(diffdata['cksum'],
+                            diffdata['version'],
+                            image['version'],
+                            diffdata['filename'],
+                            diffdata['sha256'],
+                            diffdata['size'],
+                            diffdata['urls'])
+          end
+        end
+      end
+
+      series_by_name[series_name] = series
+    end
+
+    series_by_name
+  end
+
+  def self.sync_all_series
+    bootserver_data = SeriesControl::get_bootserver_data()
+
+    all_series = get_all_series(bootserver_data)
+    p all_series
+  end
+end
+
+exitstatus = 0
+
+script_name = File.basename(__FILE__)
+Syslog.open(script_name, Syslog::LOG_CONS)
+
+$config = {
+  :download_path => '/images',
+}
+
+begin
+  SeriesControl::sync_all_series()
+rescue StandardError => e
+  warning(5, "ERROR: #{ e.message }")
+  exitstatus = 1
+end
+
+Syslog.close()
+
+exit(exitstatus)
