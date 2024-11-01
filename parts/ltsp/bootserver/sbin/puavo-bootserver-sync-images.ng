@@ -46,6 +46,8 @@ class SyncState
 end
 
 class SyncFile
+  attr_reader :filename
+
   def initialize(filename, dir=nil)
     raise 'filename is not set' \
       unless filename && filename.kind_of?(String) && !filename.empty?
@@ -56,6 +58,8 @@ class SyncFile
 end
 
 class SyncFileWithMetadata < SyncFile
+  attr_reader :cksum, :size
+
   def initialize(cksum, filename, sha256, size, urls)
     super(filename)
 
@@ -81,6 +85,8 @@ class SyncFileWithMetadata < SyncFile
 end
 
 class Image < SyncFileWithMetadata
+  attr_reader :id, :version
+
   def initialize(cksum, filename, id, sha256, size, urls, version, series)
     super(cksum, filename, sha256, size, urls)
 
@@ -97,6 +103,31 @@ class Image < SyncFileWithMetadata
   end
 
   def self.basedir; $config[:download_path]; end
+
+  def add_diff(diff)
+    return unless diff.targetimage.version == @version
+
+    if diff.baseimage.version != @version then
+      @diffs_from_by_version[diff.baseimage.version] = diff
+    end
+  end
+
+  def diffs
+    @diffs_from_by_version.values
+  end
+end
+
+class Diff < SyncFileWithMetadata
+  attr_reader :baseimage, :targetimage
+
+  def initialize(cksum, baseimage, targetimage, filename, sha256, size, urls)
+    super(cksum, filename, sha256, size, urls)
+
+    @baseimage   = baseimage
+    @targetimage = targetimage
+  end
+
+  def self.basedir; "#{ $config[:download_path] }/rdiffs"; end
 end
 
 class Series
@@ -107,6 +138,29 @@ class Series
 
     @by_id = {}
     @by_version = {}
+  end
+
+  def add_image(image)
+    @by_id[image.id] = @by_version[image.version] = image
+  end
+
+  def add_diff(cksum, from_version, to_version, filename, sha256, size, urls)
+    baseimage = get_by_version(from_version)
+    targetimage = get_by_version(to_version)
+
+    if baseimage && targetimage then
+      diff = Diff.new(cksum, baseimage, targetimage, filename, sha256, size,
+                      urls)
+      targetimage.add_diff(diff)
+    end
+  end
+
+  def get_by_version(version)
+    return @by_version[version]
+  end
+
+  def images
+    return @by_version.values
   end
 end
 
@@ -212,7 +266,38 @@ module SeriesControl
     bootserver_data = SeriesControl::get_bootserver_data()
 
     all_series = get_all_series(bootserver_data)
-    p all_series
+    begin
+      write_cksums_for_laptops(all_series)
+    rescue StandardError => e
+      warning(5, "Could not write CKSUMS file for laptops: #{ e.message }")
+    end
+  end
+
+  def self.write_cksums_for_laptops(all_series)
+    syncfiles = {}
+
+    all_series.each do |series|
+      series.images.each do |image|
+        next unless image.cksum && image.filename && image.size
+        syncfiles[ image.filename ] = image
+        image.diffs.each { |diff| syncfiles[ diff.filename ] = diff }
+      end
+    end
+
+    cksums_file_contents \
+      = syncfiles.values \
+                 .map { |sf| [sf.cksum, sf.size, sf.filename].join(' ') } \
+                 .uniq.map { |s| "#{ s }\n" }.join
+
+    raise "Download path #{ $config[:download_path] } is not a directory" \
+      unless File.directory?($config[:download_path])
+
+    cksums_file = "#{ $config[:download_path] }/CKSUMS"
+    tmpfile = "#{ cksums_file }.tmp"
+    File.open(tmpfile, 'w') { |f| f.write cksums_file_contents }
+    File.rename(tmpfile, cksums_file)
+
+    info(5, "Wrote #{ cksums_file }")
   end
 end
 
