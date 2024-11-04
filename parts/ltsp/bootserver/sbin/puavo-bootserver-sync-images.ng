@@ -18,8 +18,8 @@ end
 def prefixed_logmsg(level, msg)
   spacecount = [5, [5-level, 0].max ].min       # (5-level between [0,5])
   arrowcount = [0, [  level, 5].min ].max       # (  level between [0,5])
-  return "%s %s" % [ (" " * spacecount  +  ">" * arrowcount),
-                     msg ]
+  "%s %s" % [ (" " * spacecount  +  ">" * arrowcount),
+              msg ]
 end
 
 def info(level, msg, color=nil)
@@ -58,6 +58,7 @@ class SyncFile
 end
 
 class SyncFileWithMetadata < SyncFile
+  attr_accessor :priority
   attr_reader :cksum, :size
 
   def initialize(cksum, filename, sha256, size, urls)
@@ -78,6 +79,7 @@ class SyncFileWithMetadata < SyncFile
 
     @in_use        = 0
     @mtime         = nil
+    @priority      = nil
     @state         = SyncState.new
     @verified      = false
     @verify_result = false
@@ -113,7 +115,22 @@ class Image < SyncFileWithMetadata
   end
 
   def diffs
-    @diffs_from_by_version.values
+    return @diffs_from_by_version.values
+  end
+
+  def diffs_newest_first
+    return @diffs_from_by_version.sort.map { |version, diff| diff }.reverse
+  end
+
+  def set_priorities(base_priority, priority_adjustments)
+    # XXX use priority_adjustments
+
+    @priority = next_diff_priority = base_priority
+
+    diffs_newest_first.each do |diff|
+      diff.priority = next_diff_priority
+      next_diff_priority = (next_diff_priority/2).floor
+    end
   end
 end
 
@@ -161,6 +178,38 @@ class Series
 
   def images
     return @by_version.values
+  end
+
+  def images_newest_first
+    return @by_version.sort.map { |version, image| image }.reverse
+  end
+
+  def get_diff(from_image, to_image)
+    image = @by_id[from_image]
+    return nil unless image
+    p image
+    exit 1
+  end
+
+  def set_priorities(priority_adjustments)
+    # XXX use priority_adjustments
+
+    priority = 1024
+    images_newest_first.each do |image|
+      image.set_priorities(priority, priority_adjustments)
+      priority = (priority/4).floor
+    end
+
+    images_newest_first.each do |image|
+      info(4, "image #{ image.id } has priority #{ image.priority }") \
+        if image.priority > 0
+      image.diffs_newest_first.each do |diff|
+        info(3, "  diff #{ diff.filename } has priority #{ diff.priority }") \
+          if diff.priority > 0
+      end
+    end
+
+    # XXX ?
   end
 end
 
@@ -214,14 +263,97 @@ module SeriesControl
   end
 
   def self.get_bootserver_data
-    etc = PuavoEtc.new
-    client = PuavoRestClient.new :auth => :etc
-
-    url = "/v3/boot_servers/#{ etc.hostname }"
-
+    url = "/v3/boot_servers/#{ @etc.hostname }"
     info(5, "Loading bootserver data from puavo-rest url: #{ url }")
-    res = client.get(url)
+    res = @client.get(url)
     return res.parse()
+  end
+
+  def self.get_devices()
+    attributes = %w(current_image hostname object_classes preferred_boot_image
+                    preferred_image school_dn)
+    res = @client.get('/v3/devices',
+                      :params => { :attributes => attributes.join(',') })
+    res.parse()
+  end
+
+  def self.get_diff_between(from_image, to_image, all_series)
+    diff = nil
+    all_series.each do |series|
+      diff = series.get_diff(from_image, to_image)
+      break if diff
+    end
+    if diff then
+      puts "got diff #{ diff }"
+      exit 1
+    end
+    return diff
+  end
+
+  def self.get_priority_adjustments_by_devices(all_series, bootserver_data)
+    info(5, "Checking which images/diffs are needed by bootserver/devices")
+
+    adjustments = {}
+
+    device_list = get_devices()
+
+    bootserver_school_dn_list = Array( bootserver_data['school_dns'] )
+
+    if bootserver_data['preferred_image'] then
+      # image used by the bootserver itself must have a high priority
+      # image currently used by the bootserver itself must also have a high
+      # priority (even higher)
+      adjustments[ bootserver_data['preferred_image'] ] = 1000000
+    end
+
+    device_list.each do |device|
+      current_image        = device['current_image']
+      hostname             = device['hostname']
+      preferred_boot_image = device['preferred_boot_image']
+      preferred_image      = device['preferred_image']
+      school_dn            = device['school_dn']
+
+      if !hostname || hostname.empty? then
+        warning(3, 'There is a device in Puavo that does not have a hostname')
+        next
+      end
+
+      # XXX It should be possible to lookup bootmode from device['boot_mode']
+      # XXX and it should be either netboot or localboot, but because of
+      # XXX bugs in Puavo some localboot devices may be set to 'netboot'.
+      # XXX Thus, check out object classes to figure out the correct bootmode.
+      object_classes = device['object_classes']
+      if !object_classes.kind_of?(Array) then
+        warning(3, "Could not determine object classes for #{ hostname }")
+        next
+      end
+      bootmode = object_classes.include?('puavoNetbootDevice') \
+                   ? 'netboot'                                 \
+                   : 'localboot'
+      if !school_dn || school_dn.empty? then
+        warning(3, "Host #{ hostname } is not associated with any school," \
+                     + ' ignoring.')
+        next
+      end
+
+      # Skip hosts that are not served by this bootserver.
+      next unless bootserver_school_dn_list.include?(school_dn)
+
+      if bootmode == 'netboot' then
+        [ preferred_boot_image, preferred_image ].each do |image_id|
+          next unless image_id
+          adjustments[image_id] = (adjustments[image_id] || 0) + 5
+        end
+      end
+
+      if current_image && preferred_image \
+        && current_image != preferred_image then
+          diff = get_diff_between(current_image, preferred_image, all_series)
+          adjustments[diff] = (adjustments[diff] || 0) + 2
+      end
+    end
+
+    return adjustments
   end
 
   def self.parse_series_data(series_data)
@@ -263,6 +395,9 @@ module SeriesControl
   end
 
   def self.sync_all_series
+    @etc    = PuavoEtc.new
+    @client = PuavoRestClient.new :auth => :etc
+
     bootserver_data = SeriesControl::get_bootserver_data()
 
     all_series = get_all_series(bootserver_data)
@@ -270,6 +405,15 @@ module SeriesControl
       write_cksums_for_laptops(all_series)
     rescue StandardError => e
       warning(5, "Could not write CKSUMS file for laptops: #{ e.message }")
+    end
+
+    priority_adjustments \
+      = get_priority_adjustments_by_devices(all_series, bootserver_data)
+    p priority_adjustments
+    exit 1
+
+    all_series.each do |series|
+      series.set_priorities(priority_adjustments)
     end
   end
 
@@ -306,6 +450,7 @@ exitstatus = 0
 script_name = File.basename(__FILE__)
 Syslog.open(script_name, Syslog::LOG_CONS)
 
+# XXX implement --download-path option ? (perhaps not)
 $config = {
   :download_path => '/images',
 }
