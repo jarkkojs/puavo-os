@@ -84,6 +84,27 @@ class SyncFileWithMetadata < SyncFile
     @verified      = false
     @verify_result = false
   end
+
+  def apply_priority_requirements(priority_requirements, device_importance_map)
+    adjustments = []
+
+    priority_requirements.each do |device_type, devices_by_syncfiles|
+      next unless devices_by_syncfiles.has_key?(@id)
+      devices = devices_by_syncfiles[@id]
+      device_adjustment = devices.count * device_importance_map[device_type]
+      msg = sprintf("%s required by %d %s%s (adjusting by %d) - %s",
+                    @id, devices.count, device_type,
+                    (devices.count == 1 ? '' : 's'), device_adjustment,
+                    devices.sort.join(', '))
+      info(3, msg)
+      adjustments.append(device_adjustment)
+    end
+
+    adjustments.append(0) if adjustments.empty?
+
+    return adjustments
+  end
+
 end
 
 class Image < SyncFileWithMetadata
@@ -122,13 +143,33 @@ class Image < SyncFileWithMetadata
     return @diffs_from_by_version.sort.map { |version, diff| diff }.reverse
   end
 
-  def set_priorities(base_priority, priority_adjustments)
-    # XXX use priority_adjustments
+  def get_priority_adjustments(priority_requirements)
+    device_importance_map = {
+      :bootserver => 1000000,   # if bootserver wants an image, it must have it
+      :fatclient  => 7,         # need image to boot
+      :laptop     => 2,         # typically need diffs, not images
+    }
 
-    @priority = next_diff_priority = base_priority
+    return apply_priority_requirements(priority_requirements[:images],
+                                       device_importance_map)
+  end
+
+  def set_priorities(base_priority, priority_requirements)
+    next_diff_priority = base_priority
+    priority_adjustments = get_priority_adjustments(priority_requirements)
+
+    size_penalizer = (1.0 * @size) / 2**33
+    @priority = (base_priority + priority_adjustments.sum) / size_penalizer
+
+    if @priority > 0 then
+      msg = sprintf('priority for image %s is %.3f (%d + %s) / %.3f',
+                    @id, @priority, base_priority,
+                    priority_adjustments.join(' + '), size_penalizer)
+      info(3, msg)
+    end
 
     diffs_newest_first.each do |diff|
-      diff.priority = next_diff_priority
+      diff.set_priorities(next_diff_priority, priority_requirements)
       next_diff_priority = (next_diff_priority/2).floor
     end
   end
@@ -145,6 +186,30 @@ class Diff < SyncFileWithMetadata
   end
 
   def self.basedir; "#{ $config[:download_path] }/rdiffs"; end
+
+  def get_priority_adjustments(priority_requirements)
+    device_importance_map = {
+      :bootserver => 100000,   # if bootserver wants a diff, it must have it
+      :laptop     => 5,
+    }
+
+    return apply_priority_requirements(priority_requirements[:diffs],
+                                       device_importance_map)
+  end
+
+  def set_priorities(base_priority, priority_requirements)
+    priority_adjustments = get_priority_adjustments(priority_requirements)
+    size_penalizer = (1.0 * @size) / 2**30
+    @priority = (base_priority + priority_adjustments.sum) / size_penalizer
+
+    if @priority > 0 then
+      filename_no_suffix = File.basename(@filename, '.rdiff')
+      msg = sprintf('priority for diff %s is %.3f (%d + %s) / %.3f',
+                    filename_no_suffix, @priority, base_priority,
+                    priority_adjustments.join(' + '), size_penalizer)
+      info(2, msg)
+    end
+  end
 end
 
 class Series
@@ -184,25 +249,22 @@ class Series
     return @by_version.sort.map { |version, image| image }.reverse
   end
 
-  def set_priorities(priority_adjustments)
-    # XXX use priority_adjustments
-
+  def set_priorities(priority_requirements)
     priority = 1024
     images_newest_first.each do |image|
-      image.set_priorities(priority, priority_adjustments)
+      image.set_priorities(priority, priority_requirements)
       priority = (priority/4).floor
     end
 
-    images_newest_first.each do |image|
-      info(4, "image #{ image.id } has priority #{ image.priority }") \
-        if image.priority > 0
-      image.diffs_newest_first.each do |diff|
-        info(3, "  diff #{ diff.filename } has priority #{ diff.priority }") \
-          if diff.priority > 0
-      end
-    end
-
-    # XXX ?
+# XXX
+#   images_newest_first.each do |image|
+#     info(4, "image #{ image.id } has priority #{ image.priority }") \
+#       if image.priority > 0
+#     image.diffs_newest_first.each do |diff|
+#       info(3, "  diff #{ diff.filename } has priority #{ diff.priority }") \
+#         if diff.priority > 0
+#     end
+#   end
   end
 end
 
@@ -306,12 +368,19 @@ module SeriesControl
                    to_match[2], from_match[3])
   end
 
-  def self.get_priority_adjustments_by_devices(all_series, bootserver_data)
+  def self.get_priority_requirements_by_devices(bootserver_data)
     info(5, "Checking which images/diffs are needed by bootserver/devices")
 
-    adjustments = {
-      :diffs  => {},
-      :images => {},
+    requirements = {
+      :diffs => {
+        :bootserver => {},
+        :laptop     => {},
+      },
+      :images => {
+        :bootserver => {},
+        :fatclient  => {},
+        :laptop     => {},
+      },
     }
 
     device_list = get_devices()
@@ -319,20 +388,24 @@ module SeriesControl
     bootserver_school_dn_list = Array( bootserver_data['school_dns'] )
 
     bootserver_current_image   = bootserver_data['current_image']
+    bootserver_hostname        = bootserver_data['hostname']
     bootserver_preferred_image = bootserver_data['preferred_image']
+
+    raise 'no bootserver hostname' unless bootserver_hostname
+
     if bootserver_preferred_image then
-      # image used by the bootserver itself must have a high priority
-      # image currently used by the bootserver itself must also have a high
-      # priority (even higher)
-      adjustments[:images][ bootserver_data['preferred_image'] ] = 1000000
+      # Image used by the bootserver itself must have a high priority.
+      requirements[:images][:bootserver][bootserver_preferred_image] = [
+        bootserver_hostname
+      ]
     end
     if bootserver_current_image && bootserver_preferred_image \
         && bootserver_current_image != bootserver_preferred_image then
-          # bootserver may want a diff for an update
+          # The diff required by the bootserver is also very important.
           begin
             diff = get_diff_filename(bootserver_current_image,
                                      bootserver_preferred_image)
-            adjustments[:diffs][diff] = 1100000
+            requirements[:diffs][:bootserver][diff] = [ bootserver_hostname ]
           rescue StandardError => e
             warning(3,
                     "error in determining diff filename for #{ hostname }:" \
@@ -368,8 +441,8 @@ module SeriesControl
         # fatclients are important because they do not work unless they have
         # the image they request
         next unless preferred_image
-        adjustments[:images][preferred_image] \
-          = (adjustments[:images][preferred_image] || 0) + 7
+        (requirements[:images][:fatclient][preferred_image] ||= []) \
+          .append(hostname)
         next
       end
 
@@ -378,7 +451,7 @@ module SeriesControl
           # laptops want diffs
           begin
             diff = get_diff_filename(current_image, preferred_image)
-            adjustments[:diffs][diff] = (adjustments[:diffs][diff] || 0) + 2
+            (requirements[:diffs][:laptop][diff] ||= []).append(diff)
           rescue StandardError => e
             warning(3,
                     "error in determining diff filename for #{ hostname }:" \
@@ -387,7 +460,7 @@ module SeriesControl
       end
     end
 
-    return adjustments
+    return requirements
   end
 
   def self.parse_series_data(series_data)
@@ -441,14 +514,15 @@ module SeriesControl
       warning(5, "Could not write CKSUMS file for laptops: #{ e.message }")
     end
 
-    priority_adjustments \
-      = get_priority_adjustments_by_devices(all_series, bootserver_data)
-    p priority_adjustments
-    exit 1
+    priority_requirements \
+      = get_priority_requirements_by_devices(bootserver_data)
 
     all_series.each do |series|
-      series.set_priorities(priority_adjustments)
+      series.set_priorities(priority_requirements)
     end
+
+    exit 1
+    # XXX ?
   end
 
   def self.write_cksums_for_laptops(all_series)
@@ -505,7 +579,7 @@ parser.parse!
 begin
   SeriesControl::sync_all_series()
 rescue StandardError => e
-  warning(5, "ERROR: #{ e.message }")
+  warning(5, "ERROR: #{ e.message } / #{ e.backtrace.join(' / ') }")
   exitstatus = 1
 end
 
