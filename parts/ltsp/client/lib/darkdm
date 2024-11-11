@@ -196,8 +196,11 @@ get_safetydisplay_status() {
   display=$(hexdump -v /sys/firmware/efi/efivars/MiscMobileKBCBuiltInConfig-fb3b9ece-4aba-4933-b49d-b4d67d892351 \
         2>/dev/null || echo -n 2)
   dlen=`echo -n $display | wc -c`
+  # The hexdump length on EliteBook G3-G6 is 50, on G7+ it's 73.
   if [ $dlen -eq "50" ]; then
     echo $display | tail -c 17 | head -c 1
+  elif [ $dlen -eq "73" ]; then
+    echo $display | tail -c 40 | head -c 1
   else
     echo -n "2" # we're not familliar with this variable format, do nothing
   fi
