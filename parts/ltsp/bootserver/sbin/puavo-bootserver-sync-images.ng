@@ -184,13 +184,6 @@ class Series
     return @by_version.sort.map { |version, image| image }.reverse
   end
 
-  def get_diff(from_image, to_image)
-    image = @by_id[from_image]
-    return nil unless image
-    p image
-    exit 1
-  end
-
   def set_priorities(priority_adjustments)
     # XXX use priority_adjustments
 
@@ -269,67 +262,97 @@ module SeriesControl
     return res.parse()
   end
 
-  def self.get_devices()
-    attributes = %w(current_image hostname object_classes preferred_boot_image
-                    preferred_image school_dn)
-    res = @client.get('/v3/devices',
-                      :params => { :attributes => attributes.join(',') })
-    res.parse()
+  def self.get_device_bootmode(device)
+    # XXX It should be possible to lookup bootmode from device['boot_mode']
+    # XXX and it should be either netboot or localboot, but because of
+    # XXX bugs in Puavo some localboot devices may be set to 'netboot'.
+    # XXX Thus, check out object classes to figure out the correct bootmode.
+    object_classes = device['object_classes']
+    if !object_classes.kind_of?(Array) then
+      errmsg = "Could not determine object classes for #{ hostname }"
+      warning(3, errmsg)
+      raise errmsg
+    end
+
+    return object_classes.include?('puavoNetbootDevice') \
+             ? 'netboot'                                 \
+             : 'localboot'
   end
 
-  def self.get_diff_between(from_image, to_image, all_series)
-    diff = nil
-    all_series.each do |series|
-      diff = series.get_diff(from_image, to_image)
-      break if diff
-    end
-    if diff then
-      puts "got diff #{ diff }"
-      exit 1
-    end
-    return diff
+  def self.get_devices()
+    attributes = %w(current_image hostname object_classes preferred_image
+                    puavo_id school_dn)
+    res = @client.get('/v3/devices',
+                      :params => { :attributes => attributes.join(',') })
+    return res.parse()
+  end
+
+  def self.get_diff_filename(from_image, to_image)
+    # Determine diff filename simply from from_image and to_image strings,
+    # without looking at the series data.  We might have diffs that cross
+    # from one series to another and those will look like diffs on the
+    # originating series (from-image), but should be listed as diffs to the
+    # target image.  The diff we return here might not exist in any series
+    # but here we do not care about that, at least we could record (elsewhere)
+    # what we are missing.
+    img_regex = /^(.*?)-([0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6})-(.*?)$/
+
+    from_match = from_image.match(img_regex)
+    raise "could not find timestamp in #{ from_image }" unless from_match
+    to_match = to_image.match(img_regex)
+    raise "could not find timestamp in #{ to_image }" unless to_match
+
+    return sprintf('%s-%s--%s-%s.rdiff', from_match[1], from_match[2],
+                   to_match[2], from_match[3])
   end
 
   def self.get_priority_adjustments_by_devices(all_series, bootserver_data)
     info(5, "Checking which images/diffs are needed by bootserver/devices")
 
-    adjustments = {}
+    adjustments = {
+      :diffs  => {},
+      :images => {},
+    }
 
     device_list = get_devices()
 
     bootserver_school_dn_list = Array( bootserver_data['school_dns'] )
 
-    if bootserver_data['preferred_image'] then
+    bootserver_current_image   = bootserver_data['current_image']
+    bootserver_preferred_image = bootserver_data['preferred_image']
+    if bootserver_preferred_image then
       # image used by the bootserver itself must have a high priority
       # image currently used by the bootserver itself must also have a high
       # priority (even higher)
-      adjustments[ bootserver_data['preferred_image'] ] = 1000000
+      adjustments[:images][ bootserver_data['preferred_image'] ] = 1000000
+    end
+    if bootserver_current_image && bootserver_preferred_image \
+        && bootserver_current_image != bootserver_preferred_image then
+          # bootserver may want a diff for an update
+          begin
+            diff = get_diff_filename(bootserver_current_image,
+                                     bootserver_preferred_image)
+            adjustments[:diffs][diff] = 1100000
+          rescue StandardError => e
+            warning(3,
+                    "error in determining diff filename for #{ hostname }:" \
+                      + " #{ e.message }")
+          end
+
     end
 
     device_list.each do |device|
-      current_image        = device['current_image']
-      hostname             = device['hostname']
-      preferred_boot_image = device['preferred_boot_image']
-      preferred_image      = device['preferred_image']
-      school_dn            = device['school_dn']
+      current_image   = device['current_image']
+      hostname        = device['hostname']
+      preferred_image = device['preferred_image']
+      puavo_id        = device['puavo_id']
+      school_dn       = device['school_dn']
 
       if !hostname || hostname.empty? then
-        warning(3, 'There is a device in Puavo that does not have a hostname')
+        warning(3, "There is a device in Puavo (#{ puavo_id }) that does not" \
+                     + ' have a hostname')
         next
       end
-
-      # XXX It should be possible to lookup bootmode from device['boot_mode']
-      # XXX and it should be either netboot or localboot, but because of
-      # XXX bugs in Puavo some localboot devices may be set to 'netboot'.
-      # XXX Thus, check out object classes to figure out the correct bootmode.
-      object_classes = device['object_classes']
-      if !object_classes.kind_of?(Array) then
-        warning(3, "Could not determine object classes for #{ hostname }")
-        next
-      end
-      bootmode = object_classes.include?('puavoNetbootDevice') \
-                   ? 'netboot'                                 \
-                   : 'localboot'
       if !school_dn || school_dn.empty? then
         warning(3, "Host #{ hostname } is not associated with any school," \
                      + ' ignoring.')
@@ -339,17 +362,28 @@ module SeriesControl
       # Skip hosts that are not served by this bootserver.
       next unless bootserver_school_dn_list.include?(school_dn)
 
+      bootmode = get_device_bootmode(device) rescue nil
+      next unless bootmode
       if bootmode == 'netboot' then
-        [ preferred_boot_image, preferred_image ].each do |image_id|
-          next unless image_id
-          adjustments[image_id] = (adjustments[image_id] || 0) + 5
-        end
+        # fatclients are important because they do not work unless they have
+        # the image they request
+        next unless preferred_image
+        adjustments[:images][preferred_image] \
+          = (adjustments[:images][preferred_image] || 0) + 7
+        next
       end
 
       if current_image && preferred_image \
         && current_image != preferred_image then
-          diff = get_diff_between(current_image, preferred_image, all_series)
-          adjustments[diff] = (adjustments[diff] || 0) + 2
+          # laptops want diffs
+          begin
+            diff = get_diff_filename(current_image, preferred_image)
+            adjustments[:diffs][diff] = (adjustments[:diffs][diff] || 0) + 2
+          rescue StandardError => e
+            warning(3,
+                    "error in determining diff filename for #{ hostname }:" \
+                      + " #{ e.message }")
+          end
       end
     end
 
@@ -437,6 +471,12 @@ module SeriesControl
       unless File.directory?($config[:download_path])
 
     cksums_file = "#{ $config[:download_path] }/CKSUMS"
+
+    if $config[:dry_run] then
+      info(5, "Not writing #{ cksums_file } (dry-run)")
+      return
+    end
+
     tmpfile = "#{ cksums_file }.tmp"
     File.open(tmpfile, 'w') { |f| f.write cksums_file_contents }
     File.rename(tmpfile, cksums_file)
@@ -450,10 +490,17 @@ exitstatus = 0
 script_name = File.basename(__FILE__)
 Syslog.open(script_name, Syslog::LOG_CONS)
 
-# XXX implement --download-path option ? (perhaps not)
 $config = {
   :download_path => '/images',
+  :dry_run       => false,
 }
+
+parser = OptionParser.new do |opts|
+  opts.on('--dry-run', 'Only show what should be done, yet do nothing') do
+    $config[:dry_run] = true
+  end
+end
+parser.parse!
 
 begin
   SeriesControl::sync_all_series()
