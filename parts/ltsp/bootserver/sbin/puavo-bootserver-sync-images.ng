@@ -30,6 +30,28 @@ def warning(level, msg)
   log(level, STDERR, Syslog::LOG_WARNING, "WARNING: #{ msg }", HighLine::RED)
 end
 
+class Priority
+  attr_reader :value
+
+  def initialize(base_priority, adjustments, syncfile)
+    @base_priority = base_priority
+    @adjustments   = adjustments
+    @syncfile      = syncfile
+
+    @value = calculate()
+  end
+
+  def calculate
+    (@base_priority + @adjustments.sum) / @syncfile.size_penalizer
+  end
+
+  def calculation
+    adjustments_sum_string = @adjustments.join(' + ')
+    return sprintf('(%d + %s) / %.3f', @base_priority, adjustments_sum_string,
+                   @syncfile.size_penalizer)
+  end
+end
+
 class SyncState
   StatesAndMessages = {
     :missing    => "%s is missing",
@@ -89,22 +111,24 @@ class SyncFileWithMetadata < SyncFile
     adjustments = []
 
     priority_requirements.each do |device_type, devices_by_syncfiles|
-      next unless devices_by_syncfiles.has_key?(@id)
-      devices = devices_by_syncfiles[@id]
+      next unless devices_by_syncfiles.has_key?(@filename)
+      devices = devices_by_syncfiles[@filename]
       device_adjustment = devices.count * device_importance_map[device_type]
-      msg = sprintf("%s required by %d %s%s (adjusting by %d) - %s",
-                    @id, devices.count, device_type,
-                    (devices.count == 1 ? '' : 's'), device_adjustment,
-                    devices.sort.join(', '))
-      info(3, msg)
-      adjustments.append(device_adjustment)
+
+      unless $log_deduplicator[@filename] then
+        msg = sprintf("%s required by %d %s%s (adjusting by %d) - %s",
+                      @filename, devices.count, device_type,
+                      (devices.count == 1 ? '' : 's'), device_adjustment,
+                      devices.sort.join(', '))
+        info(4, msg)
+        $log_deduplicator[@filename] = 1
+      end
     end
 
     adjustments.append(0) if adjustments.empty?
 
     return adjustments
   end
-
 end
 
 class Image < SyncFileWithMetadata
@@ -157,22 +181,15 @@ class Image < SyncFileWithMetadata
   def set_priorities(base_priority, priority_requirements)
     next_diff_priority = base_priority
     priority_adjustments = get_priority_adjustments(priority_requirements)
-
-    size_penalizer = (1.0 * @size) / 2**33
-    @priority = (base_priority + priority_adjustments.sum) / size_penalizer
-
-    if @priority > 0 then
-      msg = sprintf('priority for image %s is %.3f (%d + %s) / %.3f',
-                    @id, @priority, base_priority,
-                    priority_adjustments.join(' + '), size_penalizer)
-      info(3, msg)
-    end
+    @priority = Priority.new(base_priority, priority_adjustments, self)
 
     diffs_newest_first.each do |diff|
       diff.set_priorities(next_diff_priority, priority_requirements)
       next_diff_priority = (next_diff_priority/2).floor
     end
   end
+
+  def size_penalizer; (1.0 * @size) / 2**33; end
 end
 
 class Diff < SyncFileWithMetadata
@@ -199,17 +216,10 @@ class Diff < SyncFileWithMetadata
 
   def set_priorities(base_priority, priority_requirements)
     priority_adjustments = get_priority_adjustments(priority_requirements)
-    size_penalizer = (1.0 * @size) / 2**30
-    @priority = (base_priority + priority_adjustments.sum) / size_penalizer
-
-    if @priority > 0 then
-      filename_no_suffix = File.basename(@filename, '.rdiff')
-      msg = sprintf('priority for diff %s is %.3f (%d + %s) / %.3f',
-                    filename_no_suffix, @priority, base_priority,
-                    priority_adjustments.join(' + '), size_penalizer)
-      info(2, msg)
-    end
+    @priority = Priority.new(base_priority, priority_adjustments, self)
   end
+
+  def size_penalizer; (1.0 * @size) / 2**30; end
 end
 
 class Series
@@ -255,16 +265,6 @@ class Series
       image.set_priorities(priority, priority_requirements)
       priority = (priority/4).floor
     end
-
-# XXX
-#   images_newest_first.each do |image|
-#     info(4, "image #{ image.id } has priority #{ image.priority }") \
-#       if image.priority > 0
-#     image.diffs_newest_first.each do |diff|
-#       info(3, "  diff #{ diff.filename } has priority #{ diff.priority }") \
-#         if diff.priority > 0
-#     end
-#   end
   end
 end
 
@@ -441,8 +441,8 @@ module SeriesControl
         # fatclients are important because they do not work unless they have
         # the image they request
         next unless preferred_image
-        (requirements[:images][:fatclient][preferred_image] ||= []) \
-          .append(hostname)
+        filename = '%s.img' % preferred_image
+        (requirements[:images][:fatclient][filename] ||= []).append(hostname)
         next
       end
 
@@ -501,6 +501,24 @@ module SeriesControl
     series_by_name
   end
 
+  def self.get_files_with_highest_priority_first(all_series)
+    syncfile_list = []
+    all_series.each do |series|
+      series.images.each do |img|
+        syncfile_list.append(img)
+        img.diffs.each do |diff|
+          syncfile_list.append(diff)
+        end
+      end
+    end
+
+    # .uniq is used because some images may be listed in multiple series
+    # (we should be getting the instance with the highest priority)
+    return syncfile_list\
+             .sort_by { |syncfile| syncfile.priority.value }.reverse \
+             .uniq    { |syncfile| syncfile.filename }
+  end
+
   def self.sync_all_series
     @etc    = PuavoEtc.new
     @client = PuavoRestClient.new :auth => :etc
@@ -521,8 +539,21 @@ module SeriesControl
       series.set_priorities(priority_requirements)
     end
 
+    info(5, 'Listing file priorities:')
+
+    files_in_priority_order = get_files_with_highest_priority_first(all_series)
+    files_in_priority_order.each do |syncfile|
+      next unless syncfile.priority.value > 0
+      msg = sprintf('%s has priority %s = %.3f', syncfile.filename,
+                    syncfile.priority.calculation, syncfile.priority.value)
+      info(3, msg)
+    end
+
+    # XXX should delete all files to be removed before syncing starts
+    # XXX in deletion, should make sure that the image which is hardlinked
+    # XXX to /images/ltsp.img is never deleted
+
     exit 1
-    # XXX ?
   end
 
   def self.write_cksums_for_laptops(all_series)
@@ -560,6 +591,8 @@ module SeriesControl
 end
 
 exitstatus = 0
+
+$log_deduplicator = {}
 
 script_name = File.basename(__FILE__)
 Syslog.open(script_name, Syslog::LOG_CONS)
