@@ -77,6 +77,63 @@ class SyncFile
     @basedir  = dir || self.class.basedir
     @filename = File.basename(filename)
   end
+
+  def cleanup_tempfiles
+    tempfiles_to_delete = [ download_path, partial_unverified_path ]
+    tempfiles_to_delete << unverified_path if inplace?
+
+    delete_files(tempfiles_to_delete)
+  end
+
+  def download_path
+    return "#{ final_path }.partial"
+  end
+
+  def final_path
+    return "#{ @basedir }/#{ @filename }"
+  end
+
+  def partial_unverified_path
+    return "#{ unverified_path }.partial"
+  end
+
+  def unverified_path
+    return "#{ final_path }.unverified"
+  end
+
+  def inplace?
+    return File.exists?(final_path)
+  end
+
+  def delete
+    return delete_files(all_possible_paths)
+  end
+
+  def delete_files(filelist)
+    all_deleted_ok = true
+
+    filelist.each do |path|
+      next unless File.exists?(path)
+
+      infolevel = (path == final_path) ? 3 : 2
+
+      if File.exists?("#{ path }.lock") then
+        warning(infolevel, "Not deleting #{ path } because it has .lock")
+        all_deleted_ok = false
+        next
+      end
+
+      info(infolevel, "Deleting #{ path }")
+      begin
+        File.delete(path)
+      rescue StandardError => e
+        all_deleted_ok = false
+        warning(2, "Could not delete #{ path }: #{ e.message }")
+      end
+    end
+
+    return all_deleted_ok
+  end
 end
 
 class SyncFileWithMetadata < SyncFile
@@ -157,6 +214,11 @@ class Image < SyncFileWithMetadata
     if diff.baseimage.version != @version then
       @diffs_from_by_version[diff.baseimage.version] = diff
     end
+  end
+
+  def cleanup_tempfiles
+    diffs.each { |diff| diff.cleanup_tempfiles }
+    super
   end
 
   def diffs
@@ -247,6 +309,10 @@ class Series
     end
   end
 
+  def cleanup_tempfiles
+    images.each { |image| image.cleanup_tempfiles }
+  end
+
   def get_by_version(version)
     return @by_version[version]
   end
@@ -269,6 +335,10 @@ class Series
 end
 
 module SeriesControl
+  def initialize
+    @all_series = nil
+  end
+
   # Load series json definition files
   def self.fetch_and_parse_series_data(source_url)
     info(5, "Using image series source url #{ source_url }")
@@ -296,7 +366,7 @@ module SeriesControl
     return series_by_name
   end
 
-  def self.get_all_series(bootserver_data)
+  def self.update_all_series(bootserver_data)
     all_series_list = []
     series_urls = Array(bootserver_data['image_series_source_urls'])
 
@@ -314,7 +384,7 @@ module SeriesControl
       raise "No series information, can not do anything"
     end
 
-    return all_series.values
+    @all_series = all_series.values
   end
 
   def self.get_bootserver_data
@@ -501,9 +571,9 @@ module SeriesControl
     series_by_name
   end
 
-  def self.get_files_with_highest_priority_first(all_series)
+  def self.get_files_with_highest_priority_first
     syncfile_list = []
-    all_series.each do |series|
+    @all_series.each do |series|
       series.images.each do |img|
         syncfile_list.append(img)
         img.diffs.each do |diff|
@@ -519,15 +589,56 @@ module SeriesControl
              .uniq    { |syncfile| syncfile.filename }
   end
 
+  def self.log_files_in_priority_order(files_in_priority_order)
+    info(5, 'Listing file priorities:')
+    files_in_priority_order.each do |syncfile|
+      next unless syncfile.priority.value > 0
+      msg = sprintf('%s has priority %s = %.3f', syncfile.filename,
+                    syncfile.priority.calculation, syncfile.priority.value)
+      info(3, msg)
+    end
+  end
+
+  def self.lookup_files_taking_space
+    all_images = Dir.glob("#{ Image.basedir }/*.img")
+    rdiffs = Dir.glob("#{ Diff.basedir  }/*.rdiff")
+
+    hardlinked_system_images = [
+      File.join(Image.basedir, 'ltsp.img'),
+      File.join(Image.basedir, 'ltsp-backup.img'),
+    ]
+
+    images = all_images.reject { |img| hardlinked_system_images.include?(img) }
+
+    filesizes_by_path = {}
+    files = images + rdiffs
+    files.each do |filepath|
+      begin
+        filesizes_by_path[filepath] = File.stat(filepath).size
+      rescue StandardError => e
+        raise "Could not determine file #{ filepath } size: #{ e.message }"
+      end
+    end
+
+    # XXX
+  end
+
+  def self.cleanup_tempfiles
+    info(5, "Cleaning up temporary files")
+    @all_series.each do |series|
+      series.cleanup_tempfiles
+    end
+  end
+
   def self.sync_all_series
     @etc    = PuavoEtc.new
     @client = PuavoRestClient.new :auth => :etc
 
     bootserver_data = SeriesControl::get_bootserver_data()
+    update_all_series(bootserver_data)
 
-    all_series = get_all_series(bootserver_data)
     begin
-      write_cksums_for_laptops(all_series)
+      write_cksums_for_laptops()
     rescue StandardError => e
       warning(5, "Could not write CKSUMS file for laptops: #{ e.message }")
     end
@@ -535,19 +646,20 @@ module SeriesControl
     priority_requirements \
       = get_priority_requirements_by_devices(bootserver_data)
 
-    all_series.each do |series|
+    @all_series.each do |series|
       series.set_priorities(priority_requirements)
     end
 
-    info(5, 'Listing file priorities:')
+    cleanup_tempfiles()
 
-    files_in_priority_order = get_files_with_highest_priority_first(all_series)
-    files_in_priority_order.each do |syncfile|
-      next unless syncfile.priority.value > 0
-      msg = sprintf('%s has priority %s = %.3f', syncfile.filename,
-                    syncfile.priority.calculation, syncfile.priority.value)
-      info(3, msg)
-    end
+    files_in_priority_order = get_files_with_highest_priority_first()
+    log_files_in_priority_order(files_in_priority_order)
+
+    files_taking_space = lookup_files_taking_space()
+
+    # XXX then make a list of images/rdiffs from the
+    # XXX highest priority first and calculate how many images/rdiffs we
+    # XXX can sync
 
     # XXX should delete all files to be removed before syncing starts
     # XXX in deletion, should make sure that the image which is hardlinked
@@ -556,10 +668,10 @@ module SeriesControl
     exit 1
   end
 
-  def self.write_cksums_for_laptops(all_series)
+  def self.write_cksums_for_laptops()
     syncfiles = {}
 
-    all_series.each do |series|
+    @all_series.each do |series|
       series.images.each do |image|
         next unless image.cksum && image.filename && image.size
         syncfiles[ image.filename ] = image
