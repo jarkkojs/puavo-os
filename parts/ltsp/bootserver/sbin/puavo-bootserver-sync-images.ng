@@ -1,5 +1,6 @@
 #!/usr/bin/ruby
 
+require 'filesystem'
 require 'highline/import'
 require 'net/http'
 require 'puavo/etc'
@@ -78,31 +79,18 @@ class SyncFile
     @filename = File.basename(filename)
   end
 
+  def all_possible_paths
+    return [ download_path,
+             partial_unverified_path,
+             unverified_path,
+             final_path ]
+  end
+
   def cleanup_tempfiles
     tempfiles_to_delete = [ download_path, partial_unverified_path ]
     tempfiles_to_delete << unverified_path if inplace?
 
     delete_files(tempfiles_to_delete)
-  end
-
-  def download_path
-    return "#{ final_path }.partial"
-  end
-
-  def final_path
-    return "#{ @basedir }/#{ @filename }"
-  end
-
-  def partial_unverified_path
-    return "#{ unverified_path }.partial"
-  end
-
-  def unverified_path
-    return "#{ final_path }.unverified"
-  end
-
-  def inplace?
-    return File.exists?(final_path)
   end
 
   def delete
@@ -118,8 +106,13 @@ class SyncFile
       infolevel = (path == final_path) ? 3 : 2
 
       if File.exists?("#{ path }.lock") then
-        warning(infolevel, "Not deleting #{ path } because it has .lock")
+        warning(infolevel, "not deleting #{ path } because it has .lock")
         all_deleted_ok = false
+        next
+      end
+
+      if $config[:dry_run] then
+        info(infolevel, "not deleting #{ path } (dry-run)")
         next
       end
 
@@ -133,6 +126,26 @@ class SyncFile
     end
 
     return all_deleted_ok
+  end
+
+  def download_path
+    return "#{ final_path }.partial"
+  end
+
+  def final_path
+    return "#{ @basedir }/#{ @filename }"
+  end
+
+  def inplace?
+    return File.exists?(final_path)
+  end
+
+  def partial_unverified_path
+    return "#{ unverified_path }.partial"
+  end
+
+  def unverified_path
+    return "#{ final_path }.unverified"
   end
 end
 
@@ -339,6 +352,20 @@ module SeriesControl
     @all_series = nil
   end
 
+  def self.calculate_total_usable_space(files_taking_diskspace)
+    free_diskspace = lookup_free_diskspace()
+    space_taken_by_files = files_taking_diskspace.values.sum
+    usable_space = free_diskspace + space_taken_by_files
+    return [ usable_space, 0 ].max
+  end
+
+  def self.cleanup_tempfiles
+    info(5, "Cleaning up temporary files")
+    @all_series.each do |series|
+      series.cleanup_tempfiles
+    end
+  end
+
   # Load series json definition files
   def self.fetch_and_parse_series_data(source_url)
     info(5, "Using image series source url #{ source_url }")
@@ -364,27 +391,6 @@ module SeriesControl
     end
 
     return series_by_name
-  end
-
-  def self.update_all_series(bootserver_data)
-    all_series_list = []
-    series_urls = Array(bootserver_data['image_series_source_urls'])
-
-    if series_urls.empty? then
-      info(5, "No series urls were defined")
-    else
-      series_urls.each do |series_url|
-        all_series_list << fetch_and_parse_series_data(series_url)
-      end
-    end
-
-    all_series = all_series_list.reduce(&:merge) || []
-
-    if all_series.empty? then
-      raise "No series information, can not do anything"
-    end
-
-    @all_series = all_series.values
   end
 
   def self.get_bootserver_data
@@ -470,18 +476,17 @@ module SeriesControl
       ]
     end
     if bootserver_current_image && bootserver_preferred_image \
-        && bootserver_current_image != bootserver_preferred_image then
-          # The diff required by the bootserver is also very important.
-          begin
-            diff = get_diff_filename(bootserver_current_image,
-                                     bootserver_preferred_image)
-            requirements[:diffs][:bootserver][diff] = [ bootserver_hostname ]
-          rescue StandardError => e
-            warning(3,
-                    "error in determining diff filename for #{ hostname }:" \
-                      + " #{ e.message }")
-          end
-
+         && bootserver_current_image != bootserver_preferred_image then
+      # The diff required by the bootserver is also very important.
+      begin
+        diff = get_diff_filename(bootserver_current_image,
+                                 bootserver_preferred_image)
+        requirements[:diffs][:bootserver][diff] = [ bootserver_hostname ]
+      rescue StandardError => e
+        warning(3,
+                "error in determining diff filename for #{ hostname }:" \
+                  + " #{ e.message }")
+      end
     end
 
     device_list.each do |device|
@@ -533,6 +538,71 @@ module SeriesControl
     return requirements
   end
 
+  def self.get_files_with_highest_priority_first
+    syncfile_list = []
+    @all_series.each do |series|
+      series.images.each do |img|
+        syncfile_list.append(img)
+        img.diffs.each do |diff|
+          syncfile_list.append(diff)
+        end
+      end
+    end
+
+    # .uniq is used because some images may be listed in multiple series
+    # (we should be getting the instance with the highest priority)
+    return syncfile_list \
+             .sort_by { |syncfile| syncfile.priority.value }.reverse \
+             .uniq    { |syncfile| syncfile.filename }
+  end
+
+  def self.log_files_in_priority_order(files_in_priority_order)
+    info(5, 'Listing file priorities:')
+    files_in_priority_order.each do |syncfile|
+      next unless syncfile.priority.value > 0
+      msg = sprintf('%s has priority %s = %.3f', syncfile.filename,
+                    syncfile.priority.calculation, syncfile.priority.value)
+      info(3, msg)
+    end
+  end
+
+  def self.lookup_files_taking_space
+    all_images = Dir.glob("#{ Image.basedir }/*.img")
+    all_rdiffs = Dir.glob("#{ Diff.basedir  }/*.rdiff")
+
+    hardlinked_system_images = [
+      File.join(Image.basedir, 'ltsp.img'),
+      File.join(Image.basedir, 'ltsp-backup.img'),
+    ]
+
+    all_files = all_images + all_rdiffs
+
+    # we reject files that are our system images or have a hardlink count
+    # of more than one or that have a corresponding .lock file
+    files_to_manage = all_files.reject do |fp|
+                                  hardlinked_system_images.include?(fp) \
+                                    || File.stat(fp).nlink > 1 \
+                                    || File.exists?('%s.lock' % fp)
+                                end
+
+    filesizes_by_filename = {}
+    files_to_manage.each do |filepath|
+      filename = File.basename(filepath)
+      begin
+        filesizes_by_filename[filename] = File.stat(filepath).size
+      rescue StandardError => e
+        raise "Could not determine file #{ filepath } size: #{ e.message }"
+      end
+    end
+
+    return filesizes_by_filename
+  end
+
+  def self.lookup_free_diskspace
+    stat = FileSystem.stat($config[:download_path])
+    return stat.blocks_avail * stat.block_size
+  end
+
   def self.parse_series_data(series_data)
     series_by_name = Hash.new
 
@@ -571,65 +641,6 @@ module SeriesControl
     series_by_name
   end
 
-  def self.get_files_with_highest_priority_first
-    syncfile_list = []
-    @all_series.each do |series|
-      series.images.each do |img|
-        syncfile_list.append(img)
-        img.diffs.each do |diff|
-          syncfile_list.append(diff)
-        end
-      end
-    end
-
-    # .uniq is used because some images may be listed in multiple series
-    # (we should be getting the instance with the highest priority)
-    return syncfile_list\
-             .sort_by { |syncfile| syncfile.priority.value }.reverse \
-             .uniq    { |syncfile| syncfile.filename }
-  end
-
-  def self.log_files_in_priority_order(files_in_priority_order)
-    info(5, 'Listing file priorities:')
-    files_in_priority_order.each do |syncfile|
-      next unless syncfile.priority.value > 0
-      msg = sprintf('%s has priority %s = %.3f', syncfile.filename,
-                    syncfile.priority.calculation, syncfile.priority.value)
-      info(3, msg)
-    end
-  end
-
-  def self.lookup_files_taking_space
-    all_images = Dir.glob("#{ Image.basedir }/*.img")
-    rdiffs = Dir.glob("#{ Diff.basedir  }/*.rdiff")
-
-    hardlinked_system_images = [
-      File.join(Image.basedir, 'ltsp.img'),
-      File.join(Image.basedir, 'ltsp-backup.img'),
-    ]
-
-    images = all_images.reject { |img| hardlinked_system_images.include?(img) }
-
-    filesizes_by_path = {}
-    files = images + rdiffs
-    files.each do |filepath|
-      begin
-        filesizes_by_path[filepath] = File.stat(filepath).size
-      rescue StandardError => e
-        raise "Could not determine file #{ filepath } size: #{ e.message }"
-      end
-    end
-
-    # XXX
-  end
-
-  def self.cleanup_tempfiles
-    info(5, "Cleaning up temporary files")
-    @all_series.each do |series|
-      series.cleanup_tempfiles
-    end
-  end
-
   def self.sync_all_series
     @etc    = PuavoEtc.new
     @client = PuavoRestClient.new :auth => :etc
@@ -650,25 +661,102 @@ module SeriesControl
       series.set_priorities(priority_requirements)
     end
 
+    # XXX this should clean up tempfiles for files which are
+    # XXX not part of any series (may be old files)
     cleanup_tempfiles()
+
+    syncfiles_to_sync, syncfiles_to_delete \
+      = determine_files_to_sync_and_files_to_delete()
+
+    syncfiles_to_delete.each do |syncfile|
+      syncfile.delete
+    end
+
+    syncfiles_to_sync.each do |syncfile|
+      syncfile.sync
+    end
+
+    # XXX
+    exit 1
+  end
+
+  def self.determine_files_to_sync_and_files_to_delete
+    info(5, 'determining files to sync and files to delete')
+
+    syncfiles_to_delete = []
+    syncfiles_to_sync   = []
 
     files_in_priority_order = get_files_with_highest_priority_first()
     log_files_in_priority_order(files_in_priority_order)
 
     files_taking_space = lookup_files_taking_space()
+    total_usable_space = calculate_total_usable_space(files_taking_space)
 
-    # XXX then make a list of images/rdiffs from the
-    # XXX highest priority first and calculate how many images/rdiffs we
-    # XXX can sync
+    space_available = total_usable_space
 
-    # XXX should delete all files to be removed before syncing starts
-    # XXX in deletion, should make sure that the image which is hardlinked
-    # XXX to /images/ltsp.img is never deleted
+    files_in_priority_order.each do |syncfile|
+      if syncfile.size > (space_available - $config[:space_reserved]) then
+        next unless files_taking_space[ syncfile.filename ]
 
-    exit 1
+        syncfiles_to_delete.append(syncfile)
+        fmt = 'choosing %s (priority=%.3f size=%d) for deletion as there is' \
+                + ' no space available (only %d bytes)'
+        msg = sprintf(fmt, syncfile.filename, syncfile.priority.value,
+                      syncfile.size, space_available)
+        warning(4, msg)
+        next
+      end
+
+      fmt = 'choosing %s (priority=%.3f size=%d) for sync,' \
+              + ' %d bytes are available'
+      msg = sprintf(fmt, syncfile.filename, syncfile.priority.value,
+                    syncfile.size, space_available)
+      info(4, msg, HighLine::GREEN)
+      syncfiles_to_sync.append(syncfile)
+      space_available -= syncfile.size
+    end
+
+    files_to_sync = Hash[ syncfiles_to_sync.map { |sf| [ sf.filename, 1 ] } ]
+
+    files_taking_space.each do |filename, size|
+      next if files_to_sync.has_key?(filename)
+
+      msg = sprintf('going to delete unmanaged file %s (freeing %d bytes)',
+                    filename, size)
+      warning(4, msg)
+
+      # setup a simple syncfile only for deletion
+      syncfile = filename.match(/\.img$/) \
+                   ? SyncFile.new(filename, Image.basedir) \
+                   : SyncFile.new(filenae,  Diff.basedir)
+      syncfiles_to_delete.append(syncfile)
+    end
+
+    return syncfiles_to_sync, syncfiles_to_delete
   end
 
-  def self.write_cksums_for_laptops()
+  def self.update_all_series(bootserver_data)
+    all_series_list = []
+    series_urls = Array(bootserver_data['image_series_source_urls'])
+
+    if series_urls.empty? then
+      info(5, "No series urls were defined")
+    else
+      series_urls.each do |series_url|
+        all_series_list << fetch_and_parse_series_data(series_url)
+      end
+    end
+
+    all_series = all_series_list.reduce(&:merge) || []
+
+    if all_series.empty? then
+      raise "No series information, can not do anything"
+    end
+
+    @all_series = all_series.values
+  end
+
+  def self.write_cksums_for_laptops
     syncfiles = {}
 
     @all_series.each do |series|
@@ -710,18 +798,30 @@ script_name = File.basename(__FILE__)
 Syslog.open(script_name, Syslog::LOG_CONS)
 
 $config = {
-  :download_path => '/images',
-  :dry_run       => false,
+  :download_path  => '/images',
+  :dry_run        => false,
+  :space_reserved => 4 * 2**30,         # four gigabytes
 }
 
-parser = OptionParser.new do |opts|
-  opts.on('--dry-run', 'Only show what should be done, yet do nothing') do
-    $config[:dry_run] = true
-  end
-end
-parser.parse!
-
 begin
+  parser = OptionParser.new do |opts|
+    opts.on('--download-path',
+            'The target directory for images/rdiffs') do |path|
+      $config[:download_path] = path
+    end
+    opts.on('--dry-run',
+            'Only show what should be done, yet do nothing') do
+      $config[:dry_run] = true
+    end
+    opts.on('--space-reserved',
+            'The amount of space reserved in bytes') do |value|
+      raise "could not interpret #{ value } as an integer" \
+        unless value.match(/\A\d+\z/)
+      $config[:space_reserved] = Integer(value)
+    end
+  end
+  parser.parse!
+
   SeriesControl::sync_all_series()
 rescue StandardError => e
   warning(5, "ERROR: #{ e.message } / #{ e.backtrace.join(' / ') }")
