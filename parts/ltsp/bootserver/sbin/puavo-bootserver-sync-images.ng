@@ -49,13 +49,19 @@ class Priority
   end
 
   def calculate
-    (@base_priority + @adjustments.sum) / @syncfile.size_penalizer
+    (@base_priority + @adjustments.sum) \
+      / @syncfile.size_penalizer / @syncfile.backward_diff_penalizer
   end
 
   def calculation
     adjustments_sum_string = @adjustments.join(' + ')
-    return sprintf('(%d + %s) / %.3f', @base_priority, adjustments_sum_string,
-                   @syncfile.size_penalizer)
+    backwards_penalizer \
+      = @syncfile.backward_diff_penalizer != 1 \
+          ? " / #{ @syncfile.backward_diff_penalizer } (backwards diff)" \
+          : ''
+    return sprintf('(%d + %s) / %.3f%s', @base_priority,
+                   adjustments_sum_string, @syncfile.size_penalizer,
+                   backwards_penalizer)
   end
 end
 
@@ -98,6 +104,8 @@ class SyncFile
              unverified_path,
              final_path ]
   end
+
+  def backward_diff_penalizer; return 1; end
 
   def cleanup_tempfiles
     tempfiles_to_delete = [ download_path, partial_unverified_path ]
@@ -197,10 +205,10 @@ class SyncFileWithMetadata < SyncFile
       device_adjustment = devices.count * device_importance_map[device_type]
 
       unless $log_deduplicator[@filename] then
-        msg = sprintf("%s required by %d %s%s (adjusting by %d) - %s",
+        msg = sprintf("%s required by %d %s%s (adjusting by %d) :: %s",
                       @filename, devices.count, device_type,
                       (devices.count == 1 ? '' : 's'), device_adjustment,
-                      devices.sort.join(', '))
+                      devices.sort.join(' '))
         info(4, msg)
         $log_deduplicator[@filename] = 1
       end
@@ -259,7 +267,7 @@ class SyncFileWithMetadata < SyncFile
         hash = Digest::SHA2.new
         received_size = 0
 
-        info(2, "Downloading from #{ url } to #{ download_path }")
+        info(3, "Downloading from #{ url } to #{ download_path }")
 
         File.open(download_path, 'w') do |temp_file|
           temp_file.binmode
@@ -288,7 +296,7 @@ class SyncFileWithMetadata < SyncFile
         if received_size != @size then
           begin
             File.delete(download_path)
-            info(2, "Deleted #{ download_path }")
+            info(3, "Deleted #{ download_path }")
           rescue StandardError => e
           end
           raise "Received size (#{ received_size }) did not match" \
@@ -298,7 +306,7 @@ class SyncFileWithMetadata < SyncFile
         if hash.to_s != @sha256 then
           begin
             File.delete(download_path)
-            info(2, "Deleted #{ download_path }")
+            info(3, "Deleted #{ download_path }")
           rescue StandardError => e
           end
           raise "Checksum mismatch for #{ download_path }" \
@@ -306,10 +314,10 @@ class SyncFileWithMetadata < SyncFile
                   + " expected #{ @sha256 }, received #{ hash.to_s }"
         end
 
-        info(2, "Checksum verified for #{ download_path }" \
+        info(3, "Checksum verified for #{ download_path }" \
                   + " (calculated while downloading)")
         File.rename(download_path, final_path)
-        info(1, "Moved #{ download_path } to #{ final_path }")
+        info(2, "Moved #{ download_path } to #{ final_path }")
 
         # This can fail and that might be only a temporary error,
         # so ignore errors.
@@ -505,11 +513,11 @@ class Image < SyncFileWithMetadata
 
     run_command = lambda do |cmd|
       if system(*cmd) then
-        info(level-1, %Q{#{ cmd } ran successfully}, HighLine::GREEN)
+        info(level-1, %Q{Command #{ cmd } ran successfully}, HighLine::GREEN)
       else
         all_ok = false
 	warning(level-1,
-		%Q{#{ cmd } returned error code #{ $?.exitstatus }})
+		%Q{Command #{ cmd } returned error code #{ $?.exitstatus }})
       end
     end
 
@@ -545,12 +553,17 @@ class Diff < SyncFileWithMetadata
 
     @baseimage   = baseimage
     @targetimage = targetimage
+    @is_forward  = (baseimage.version < targetimage.version)
   end
 
   def self.basedir; "#{ $config[:download_path] }/rdiffs"; end
 
   def apply
     return @baseimage.verify() && do_patching
+  end
+
+  def backward_diff_penalizer
+    return @is_forward ? 1 : 5
   end
 
   def do_patching
@@ -582,7 +595,7 @@ class Diff < SyncFileWithMetadata
 
   def get_priority_adjustments(priority_requirements)
     device_importance_map = {
-      :bootserver => 100000,   # if bootserver wants a diff, it must have it
+      :bootserver => 100000,    # if bootserver wants a diff, it must have it
       :laptop     => 5,
     }
 
@@ -691,10 +704,11 @@ module SeriesControl
     files_taking_space = lookup_files_taking_space()
     total_usable_space = calculate_total_usable_space(files_taking_space)
 
-    space_available = total_usable_space
+    space_available \
+      = [ 0, (total_usable_space - $config[:space_reserved]) ].max
 
     files_in_priority_order.each do |syncfile|
-      if syncfile.size > (space_available - $config[:space_reserved]) then
+      if syncfile.size > space_available then
         next unless files_taking_space[ syncfile.filename ]
 
         syncfiles_to_delete.append(syncfile)
@@ -810,8 +824,9 @@ module SeriesControl
     to_match = to_image.match(img_regex)
     raise "could not find timestamp in #{ to_image }" unless to_match
 
-    return sprintf('%s-%s--%s-%s.rdiff', from_match[1], from_match[2],
-                   to_match[2], from_match[3])
+    diff_filename = sprintf('%s-%s--%s-%s.rdiff', from_match[1], from_match[2],
+                            to_match[2], from_match[3])
+    return diff_filename
   end
 
   def self.get_priority_requirements_by_devices(bootserver_data)
