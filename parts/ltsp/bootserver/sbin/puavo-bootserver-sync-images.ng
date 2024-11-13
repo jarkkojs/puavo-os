@@ -2,6 +2,7 @@
 
 require 'filesystem'
 require 'highline/import'
+require 'json'
 require 'net/http'
 require 'puavo/etc'
 require 'puavo/rest-client'
@@ -66,6 +67,13 @@ class SyncState
   def initialize()
     @state = :unknown
   end
+
+  def state=(new_state)
+    raise "Unsupported state #{ new_state }" \
+      unless StatesAndMessages.has_key?(new_state)
+
+    @state = new_state
+  end
 end
 
 class SyncFile
@@ -103,25 +111,23 @@ class SyncFile
     filelist.each do |path|
       next unless File.exists?(path)
 
-      infolevel = (path == final_path) ? 3 : 2
-
       if File.exists?("#{ path }.lock") then
-        warning(infolevel, "not deleting #{ path } because it has .lock")
+        warning(4, "Not deleting #{ path } because it has .lock")
         all_deleted_ok = false
         next
       end
 
       if $config[:dry_run] then
-        info(infolevel, "not deleting #{ path } (dry-run)")
+        info(4, "Not deleting #{ path } (dry-run)")
         next
       end
 
-      info(infolevel, "Deleting #{ path }")
+      info(4, "Deleting #{ path }")
       begin
         File.delete(path)
       rescue StandardError => e
         all_deleted_ok = false
-        warning(2, "Could not delete #{ path }: #{ e.message }")
+        warning(3, "Could not delete #{ path }: #{ e.message }")
       end
     end
 
@@ -199,6 +205,210 @@ class SyncFileWithMetadata < SyncFile
 
     return adjustments
   end
+
+  def delete
+    super
+    @state.state = :deleted
+  end
+
+  def download
+    @state.state = :missing
+
+    # Go through all @urls in order and try to download from each in turn
+    # (we could also do some load balancing by first choosing one randomly?).
+    @urls.each do |url|
+      begin
+        download_from_url(url)
+        return true
+      rescue StandardError => e
+        warning(2, "Error downloading #{ url }: #{ e.message }")
+      end
+    end
+
+    return false
+  end
+
+  # Download file from specified url and check that the size and the checksum
+  # of the downloaded file matches what we expect.  If the file was downloaded
+  # successfully and those checks are okay, true is returned, otherwise false
+  # is returned.
+  def download_from_url(url)
+    if $config[:dry_run] then
+      info(2, "Not downloading from #{ url } to #{ download_path } (dry-run)")
+      return
+    end
+
+    uri = URI.parse(url)
+
+    http = Net::HTTP.new(uri.host, uri.port)
+    http.ca_file = '/etc/puavo-conf/rootca.pem'
+    http.verify_mode = OpenSSL::SSL::VERIFY_PEER
+    http.use_ssl = true
+
+    http.request_get(uri.path) do |response|
+      case response
+      when Net::HTTPNotFound
+        raise '404 - Not Found'
+
+      when Net::HTTPOK
+        hash = Digest::SHA2.new
+        received_size = 0
+
+        info(2, "Downloading from #{ url } to #{ download_path }")
+
+        File.open(download_path, 'w') do |temp_file|
+          temp_file.binmode
+
+          progress = 0
+          total = response.header['Content-Length'].to_i
+
+          response.read_body do |chunk|
+            hash      << chunk
+            temp_file << chunk
+
+            received_size += chunk.size
+            new_progress = (received_size * 100) / total
+            if progress != new_progress then
+              progress = new_progress
+              msg = 'Download progress: %3d%%' % [progress]
+              print("\r" + prefixed_logmsg(1, msg))
+            end
+          end
+        end
+
+        puts '' # output newline after Download progress has gone to 100%
+
+        @state.state = :downloaded
+
+        if received_size != @size then
+          begin
+            File.delete(download_path)
+            info(2, "Deleted #{ download_path }")
+          rescue StandardError => e
+          end
+          raise "Received size (#{ received_size }) did not match" \
+                  + " the expected size (#{ @size })"
+        end
+
+        if hash.to_s != @sha256 then
+          begin
+            File.delete(download_path)
+            info(2, "Deleted #{ download_path }")
+          rescue StandardError => e
+          end
+          raise "Checksum mismatch for #{ download_path }" \
+                  + " (calculated while downloading)," \
+                  + " expected #{ @sha256 }, received #{ hash.to_s }"
+        end
+
+        info(2, "Checksum verified for #{ download_path }" \
+                  + " (calculated while downloading)")
+        File.rename(download_path, final_path)
+        info(1, "Moved #{ download_path } to #{ final_path }")
+
+        # This can fail and that might be only a temporary error,
+        # so ignore errors.
+        self.class.run_syncfile_install_hooks(3)
+
+        @state.state = :inplace
+        return true
+      else
+        raise "puavo-rest-client error, received response #{ response.code }"
+      end
+    end
+
+    raise 'unknown download error'
+  end
+
+  # XXX materialize should also generate torrent files?
+  def materialize
+    verify()         and return true
+    patch_from_old() and return true
+    download()       and return true
+
+    return false
+  end
+
+  def self.run_syncfile_install_hooks(level, timeout=nil)
+    # by default do nothing... (subclasses can override this)
+  end
+
+  # Checks if the file in the filesystem has the same sha256 as the metadata.
+  # To speed up things, the filesize needs to match before sha256 is
+  # calculated.  The results are cached and rechecked only if file mtime
+  # changes.
+  def verify
+    # We can speed things up by assuming that all files in proper place have
+    # been verified before (but if $config[:force_verify] is true we will
+    # verify anyway).
+    if inplace? then
+      @state.state = :inplace
+      info(3, "#{ @filename } is in place", HighLine::GREEN)
+      return true unless $config[:force_verify]
+      path_to_verify = final_path
+    else
+      path_to_verify = unverified_path
+    end
+
+    if $config[:dry_run] then
+      info(3, "Not verifying #{ path_to_verify } (dry-run)")
+      return true
+    end
+
+    begin
+      current_mtime = File.mtime(path_to_verify)
+      current_size  = File.size(path_to_verify)
+    rescue StandardError => e
+      warning(2, "Problem in inspecting #{ path_to_verify }:" \
+                   + " #{ e.message }")                       \
+        unless e.kind_of?(Errno::ENOENT)
+      @state.state = :unverified
+      return @verified = @verify_result = false
+    end
+
+    if @verified && @mtime && @mtime == current_mtime then
+      return @verify_result
+    end
+
+    info(3, "Verifying #{ path_to_verify }")
+
+    @verify_result = false
+    @state.state = :unverified
+
+    if current_size == @size then
+      @mtime = current_mtime
+      digest = Digest::SHA2.file(path_to_verify).hexdigest
+      @verify_result = (digest == @sha256)
+      if @verify_result then
+        info(3, "Checksum verified for #{ path_to_verify }")
+        if path_to_verify != final_path then
+          File.rename(path_to_verify, final_path)
+          info(2, "Moved #{ path_to_verify } to #{ final_path }")
+
+          # This can fail and that might be only a temporary error,
+          # so ignore errors.
+          self.class.run_syncfile_install_hooks(3)
+        end
+        @state.state = :inplace
+      else
+        warning(3, "Checksum mismatch for #{ path_to_verify }, " \
+                     + " expected #{ @sha256 }, received #{ digest }")
+        if path_to_verify == unverified_path then
+          File.delete(path_to_verify)
+          info(3, "Deleted #{ path_to_verify }")
+        else
+          # Do not delete in case the file is in final_path... even though
+          # the file is probably broken, it is probably better to leave it
+          # and try to patch/download a new one in its place.
+          # (Verified this might happen if --force-verify option was given.)
+        end
+      end
+    end
+
+    @verified = true
+
+    return @verify_result
+  end
 end
 
 class Image < SyncFileWithMetadata
@@ -253,6 +463,61 @@ class Image < SyncFileWithMetadata
                                        device_importance_map)
   end
 
+  # Create the current image from an old image by using a patch.  First
+  # all the possible diffs are sorted by size and the list is scanned twice:
+  # first to check if there is an existing baseimage that has a patch
+  # available and if none is found, then the smallest sized diff for an
+  # existing baseimage is downloaded.
+  def patch_from_old
+    inplace_mindiffs = diffs.select { |diff| diff.inplace? } \
+                            .sort_by { |diff| diff.size }
+
+    msg = sprintf('Trying to patch a new image (%s) from existing images' \
+                    + ' and diffs', @filename)
+    info(3, msg)
+
+    inplace_mindiffs.each do |diff|
+      info(3, "Trying to patch with #{ diff.filename }")
+      if diff.apply() && verify() then
+        info(2, ' ... patching done.')
+        return true
+      end
+      warning(2, ' ... error when patching.')
+    end
+
+    explanation_msg = inplace_mindiffs.empty? \
+                        ? 'no diffs to patch from' \
+                        : 'patching attempts failed'
+    info(3, "Could not patch from an old image (#{ explanation_msg })")
+
+    return false
+  end
+
+  def self.run_syncfile_install_hooks(level, timeout=nil)
+    info(level, 'Running image install hooks')
+
+    all_ok = true
+
+    run_command = lambda do |cmd|
+      if system(*cmd) then
+        info(level-1, %Q{#{ cmd } ran successfully}, HighLine::GREEN)
+      else
+        all_ok = false
+	warning(level-1,
+		%Q{#{ cmd } returned error code #{ $?.exitstatus }})
+      end
+    end
+
+    # These are needed to run for each image so that those can be used by
+    # netboot (diskless) clients.
+    run_command.call([ '/usr/local/lib/puavo-handle-image-changes',
+		       '',
+		       timeout.to_s ])
+
+    return all_ok
+  end
+
+
   def set_priorities(base_priority, priority_requirements)
     next_diff_priority = base_priority
     priority_adjustments = get_priority_adjustments(priority_requirements)
@@ -279,6 +544,37 @@ class Diff < SyncFileWithMetadata
 
   def self.basedir; "#{ $config[:download_path] }/rdiffs"; end
 
+  def apply
+    return @baseimage.verify() && do_patching
+  end
+
+  def do_patching
+    source      = @baseimage.final_path
+    target      = @targetimage.unverified_path
+    temp_target = @targetimage.partial_unverified_path
+
+    if $config[:dry_run] then
+      info(2, "Not patching from #{ source } to #{ temp_target } (dry-run)")
+      return true
+    end
+
+    info(2, "Patching from #{ source } to #{ temp_target }")
+
+    if !system("rdiff", "patch", source, final_path, temp_target) then
+      warning(2, "rdiff failed with exit code: #{ $?.exitstatus }" \
+                   + " when using #{ final_path }")
+      return false
+    end
+
+    info(3, "Patched #{ temp_target } successfully")
+
+    File.rename(temp_target, target)
+
+    info(1, "Moved #{ temp_target } to #{ target }")
+
+    return true
+  end
+
   def get_priority_adjustments(priority_requirements)
     device_importance_map = {
       :bootserver => 100000,   # if bootserver wants a diff, it must have it
@@ -287,6 +583,11 @@ class Diff < SyncFileWithMetadata
 
     return apply_priority_requirements(priority_requirements[:diffs],
                                        device_importance_map)
+  end
+
+  def patch_from_old
+    # Diffs can not be patched from old/anything, so just return failure.
+    return false
   end
 
   def set_priorities(base_priority, priority_requirements)
@@ -347,6 +648,10 @@ class Series
   end
 end
 
+class Torrents
+  def self.basedir; "#{ $config[:download_path] }/torrents"; end
+end
+
 module SeriesControl
   def initialize
     @all_series = nil
@@ -359,11 +664,69 @@ module SeriesControl
     return [ usable_space, 0 ].max
   end
 
+  # XXX this should cleanup all *.partial *.tmp *.unverified
+  # XXX files under /images and /images/rdiffs except if we know those to be
+  # XXX something we need?
   def self.cleanup_tempfiles
     info(5, "Cleaning up temporary files")
     @all_series.each do |series|
       series.cleanup_tempfiles
     end
+  end
+
+  def self.determine_files_to_sync_and_files_to_delete
+    info(5, 'Determining files to sync and files to delete')
+
+    syncfiles_to_delete = []
+    syncfiles_to_sync   = []
+
+    files_in_priority_order = get_files_with_highest_priority_first()
+    log_files_in_priority_order(files_in_priority_order)
+
+    files_taking_space = lookup_files_taking_space()
+    total_usable_space = calculate_total_usable_space(files_taking_space)
+
+    space_available = total_usable_space
+
+    files_in_priority_order.each do |syncfile|
+      if syncfile.size > (space_available - $config[:space_reserved]) then
+        next unless files_taking_space[ syncfile.filename ]
+
+        syncfiles_to_delete.append(syncfile)
+        fmt = 'Choosing %s (priority=%.3f size=%d) for deletion as there is' \
+                + ' no space available (only %d bytes)'
+        msg = sprintf(fmt, syncfile.filename, syncfile.priority.value,
+                      syncfile.size, space_available)
+        warning(4, msg)
+        next
+      end
+
+      fmt = 'Choosing %s (priority=%.3f size=%d) for sync,' \
+              + ' %d bytes are available'
+      msg = sprintf(fmt, syncfile.filename, syncfile.priority.value,
+                    syncfile.size, space_available)
+      info(4, msg, HighLine::GREEN)
+      syncfiles_to_sync.append(syncfile)
+      space_available -= syncfile.size
+    end
+
+    files_to_sync = Hash[ syncfiles_to_sync.map { |sf| [ sf.filename, 1 ] } ]
+
+    files_taking_space.each do |filename, size|
+      next if files_to_sync.has_key?(filename)
+
+      msg = sprintf('Going to delete unmanaged file %s (freeing %d bytes)',
+                    filename, size)
+      warning(4, msg)
+
+      # setup a simple syncfile only for deletion
+      syncfile = filename.match(/\.img$/) \
+                   ? SyncFile.new(filename, Image.basedir) \
+                   : SyncFile.new(filename, Diff.basedir)
+      syncfiles_to_delete.append(syncfile)
+    end
+
+    return syncfiles_to_sync, syncfiles_to_delete
   end
 
   # Load series json definition files
@@ -484,7 +847,7 @@ module SeriesControl
         requirements[:diffs][:bootserver][diff] = [ bootserver_hostname ]
       rescue StandardError => e
         warning(3,
-                "error in determining diff filename for #{ hostname }:" \
+                "Error in determining diff filename for #{ hostname }:" \
                   + " #{ e.message }")
       end
     end
@@ -529,7 +892,7 @@ module SeriesControl
             (requirements[:diffs][:laptop][diff] ||= []).append(diff)
           rescue StandardError => e
             warning(3,
-                    "error in determining diff filename for #{ hostname }:" \
+                    "Error in determining diff filename for #{ hostname }:" \
                       + " #{ e.message }")
           end
       end
@@ -560,9 +923,9 @@ module SeriesControl
     info(5, 'Listing file priorities:')
     files_in_priority_order.each do |syncfile|
       next unless syncfile.priority.value > 0
-      msg = sprintf('%s has priority %s = %.3f', syncfile.filename,
+      msg = sprintf('File %s has priority %s = %.3f', syncfile.filename,
                     syncfile.priority.calculation, syncfile.priority.value)
-      info(3, msg)
+      info(4, msg)
     end
   end
 
@@ -663,76 +1026,54 @@ module SeriesControl
 
     # XXX this should clean up tempfiles for files which are
     # XXX not part of any series (may be old files)
+    # XXX should generate all possible paths from series and check out
+    # XXX if those are handled by syncfile deletion below
     cleanup_tempfiles()
 
     syncfiles_to_sync, syncfiles_to_delete \
       = determine_files_to_sync_and_files_to_delete()
 
+    info(5, 'Deleting files')
     syncfiles_to_delete.each do |syncfile|
       syncfile.delete
     end
 
-    syncfiles_to_sync.each do |syncfile|
-      syncfile.sync
+    if !sync(syncfiles_to_sync) then
+      return false
     end
 
-    # XXX
-    exit 1
+    return true
   end
 
-  def self.determine_files_to_sync_and_files_to_delete
-    info(5, 'determining files to sync and files to delete')
+  def self.sync(syncfiles_to_sync)
+    unless $config[:dry_run] then
+      FileUtils.mkdir_p(Image.basedir)
+      FileUtils.mkdir_p(Diff.basedir)
+      FileUtils.mkdir_p(Torrents.basedir)
+    end
 
-    syncfiles_to_delete = []
-    syncfiles_to_sync   = []
+    all_syncs_ok = true
 
-    files_in_priority_order = get_files_with_highest_priority_first()
-    log_files_in_priority_order(files_in_priority_order)
+    diffs_to_sync  = syncfiles_to_sync.select { |sf| sf.class == Diff  }
+    images_to_sync = syncfiles_to_sync.select { |sf| sf.class == Image }
 
-    files_taking_space = lookup_files_taking_space()
-    total_usable_space = calculate_total_usable_space(files_taking_space)
-
-    space_available = total_usable_space
-
-    files_in_priority_order.each do |syncfile|
-      if syncfile.size > (space_available - $config[:space_reserved]) then
-        next unless files_taking_space[ syncfile.filename ]
-
-        syncfiles_to_delete.append(syncfile)
-        fmt = 'choosing %s (priority=%.3f size=%d) for deletion as there is' \
-                + ' no space available (only %d bytes)'
-        msg = sprintf(fmt, syncfile.filename, syncfile.priority.value,
-                      syncfile.size, space_available)
-        warning(4, msg)
-        next
+    info(5, 'Syncing diffs')
+    diffs_to_sync.each do |diff|
+      info(4, "Syncing #{ diff.filename }")
+      unless diff.materialize then
+        all_syncs_ok = false
       end
-
-      fmt = 'choosing %s (priority=%.3f size=%d) for sync,' \
-              + ' %d bytes are available'
-      msg = sprintf(fmt, syncfile.filename, syncfile.priority.value,
-                    syncfile.size, space_available)
-      info(4, msg, HighLine::GREEN)
-      syncfiles_to_sync.append(syncfile)
-      space_available -= syncfile.size
     end
 
-    files_to_sync = Hash[ syncfiles_to_sync.map { |sf| [ sf.filename, 1 ] } ]
-
-    files_taking_space.each do |filename, size|
-      next if files_to_sync.has_key?(filename)
-
-      msg = sprintf('going to delete unmanaged file %s (freeing %d bytes)',
-                    filename, size)
-      warning(4, msg)
-
-      # setup a simple syncfile only for deletion
-      syncfile = filename.match(/\.img$/) \
-                   ? SyncFile.new(filename, Image.basedir) \
-                   : SyncFile.new(filenae,  Diff.basedir)
-      syncfiles_to_delete.append(syncfile)
+    info(5, 'Syncing images')
+    images_to_sync.each do |image|
+      info(4, "Syncing #{ image.filename }")
+      unless image.materialize then
+        all_syncs_ok = false
+      end
     end
 
-    return syncfiles_to_sync, syncfiles_to_delete
+    return all_syncs_ok
   end
 
   def self.update_all_series(bootserver_data)
@@ -800,7 +1141,8 @@ Syslog.open(script_name, Syslog::LOG_CONS)
 $config = {
   :download_path  => '/images',
   :dry_run        => false,
-  :space_reserved => 4 * 2**30,         # four gigabytes
+  :force_verify   => false,
+  :space_reserved => 2**30,         # one gigabyte
 }
 
 begin
@@ -813,6 +1155,9 @@ begin
             'Only show what should be done, yet do nothing') do
       $config[:dry_run] = true
     end
+    opts.on('--force-verify', 'Force verification of each image/rdiff') do
+      $config[:force_verify] = true
+    end
     opts.on('--space-reserved',
             'The amount of space reserved in bytes') do |value|
       raise "could not interpret #{ value } as an integer" \
@@ -822,9 +1167,16 @@ begin
   end
   parser.parse!
 
-  SeriesControl::sync_all_series()
+  if !SeriesControl::sync_all_series() then
+    warning(5, 'Errors when syncing')
+    exitstatus = 2
+  end
+
+  if !Image.run_syncfile_install_hooks(5, 43200) then
+    exitstatus = 1 if exitstatus == 0
+  end
 rescue StandardError => e
-  warning(5, "ERROR: #{ e.message } / #{ e.backtrace.join(' / ') }")
+  warning(5, "#{ e.message } / #{ e.backtrace.join(' / ') }")
   exitstatus = 1
 end
 
