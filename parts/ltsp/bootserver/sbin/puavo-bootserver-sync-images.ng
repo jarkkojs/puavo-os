@@ -67,12 +67,12 @@ end
 
 class SyncState
   StatesAndMessages = {
-    :missing    => "%s is missing",
-    :downloaded => "%s has been downloaded",
-    :unverified => "%s is unverified",
-    :inplace    => "%s is inplace",
-    :deleted    => "%s has been deleted",
-    :unknown    => "%s state is unknown",
+    :missing    => '%s is missing',
+    :downloaded => '%s has been downloaded',
+    :unverified => '%s is unverified',
+    :inplace    => '%s is inplace',
+    :deleted    => '%s has been deleted',
+    :unknown    => '%s state is unknown',
   }
 
   def initialize()
@@ -107,18 +107,11 @@ class SyncFile
 
   def backward_diff_penalizer; return 1; end
 
-  def cleanup_tempfiles
-    tempfiles_to_delete = [ download_path, partial_unverified_path ]
-    tempfiles_to_delete << unverified_path if inplace?
-
-    delete_files(tempfiles_to_delete)
-  end
-
   def delete
-    return delete_files(all_possible_paths)
+    return self.delete_files(all_possible_paths)
   end
 
-  def delete_files(filelist)
+  def self.delete_files(filelist)
     all_deleted_ok = true
 
     filelist.each do |path|
@@ -452,11 +445,6 @@ class Image < SyncFileWithMetadata
     end
   end
 
-  def cleanup_tempfiles
-    diffs.each { |diff| diff.cleanup_tempfiles }
-    super
-  end
-
   def diffs
     return @diffs_from_by_version.values
   end
@@ -641,10 +629,6 @@ class Series
     end
   end
 
-  def cleanup_tempfiles
-    images.each { |image| image.cleanup_tempfiles }
-  end
-
   def get_by_version(version)
     return @by_version[version]
   end
@@ -682,14 +666,14 @@ module SeriesControl
     return [ usable_space, 0 ].max
   end
 
-  # XXX this should cleanup all *.partial *.tmp *.unverified
-  # XXX files under /images and /images/rdiffs except if we know those to be
-  # XXX something we need?
   def self.cleanup_tempfiles
-    info(5, "Cleaning up temporary files")
-    @all_series.each do |series|
-      series.cleanup_tempfiles
-    end
+    info(5, 'Cleaning up temporary files')
+    glob_patterns = [ File.join(Image.basedir, '*.partial'),
+                      File.join(Image.basedir, '*.unverified'),
+                      File.join(Diff.basedir,  '*.partial'),
+                      File.join(Diff.basedir,  '*.unverified') ]
+    tempfiles = glob_patterns.map { |pattern| Dir.glob(pattern) }.flatten
+    SyncFile.delete_files(tempfiles)
   end
 
   def self.determine_files_to_sync_and_files_to_delete
@@ -1046,10 +1030,6 @@ module SeriesControl
       series.set_priorities(priority_requirements)
     end
 
-    # XXX this should clean up tempfiles for files which are
-    # XXX not part of any series (may be old files)
-    # XXX should generate all possible paths from series and check out
-    # XXX if those are handled by syncfile deletion below
     cleanup_tempfiles()
 
     syncfiles_to_sync, syncfiles_to_delete \
