@@ -479,6 +479,8 @@ class Image < SyncFileWithMetadata
 
     inplace_mindiffs.each do |diff|
       info(3, "Trying to patch with #{ diff.filename }")
+      # XXX should not try patching if source image is missing (or at least
+      # XXX not show an error in that case)
       if diff.apply() && verify() then
         info(2, ' ... patching done.')
         return true
@@ -489,7 +491,7 @@ class Image < SyncFileWithMetadata
     explanation_msg = inplace_mindiffs.empty? \
                         ? 'no diffs to patch from' \
                         : 'patching attempts failed'
-    info(3, "Could not patch from an old image (#{ explanation_msg })")
+    info(3, "Could not patch from an old image (#{ explanation_msg })")
 
     return false
   end
@@ -712,7 +714,12 @@ module SeriesControl
                     format_integer(space_available))
       info(4, msg, HighLine::GREEN)
       syncfiles_to_sync.append(syncfile)
-      space_available -= syncfile.size
+
+      # protected files are not in files_taking_space so we do not subtract
+      # those here either
+      unless is_protected_file?(syncfile.final_path) then
+        space_available -= syncfile.size
+      end
     end
 
     files_to_sync = Hash[ syncfiles_to_sync.map { |sf| [ sf.filename, 1 ] } ]
@@ -852,7 +859,7 @@ module SeriesControl
                                  bootserver_preferred_image)
         requirements[:diffs][:bootserver][diff] = [ bootserver_hostname ]
       rescue StandardError => e
-        warning(3,
+        warning(4,
                 "Error in determining diff filename for #{ hostname }:" \
                   + " #{ e.message }")
       end
@@ -925,6 +932,22 @@ module SeriesControl
              .uniq    { |syncfile| syncfile.filename }
   end
 
+  def self.is_protected_file?(filepath)
+    return false unless File.exists?(filepath)
+
+    hardlinked_system_images = [
+      File.join(Image.basedir, 'ltsp.img'),
+      File.join(Image.basedir, 'ltsp-backup.img'),
+    ]
+
+    # We protect files that are our system images or have a hardlink count
+    # of more than one or that have a corresponding .lock file so that
+    # we do not accidentally delete those.
+    return hardlinked_system_images.include?(filepath) \
+             || File.stat(filepath).nlink > 1 \
+             || File.exists?('%s.lock' % filepath)
+  end
+
   def self.log_files_in_priority_order(files_in_priority_order)
     info(5, 'Listing file priorities:')
     files_in_priority_order.each do |syncfile|
@@ -938,21 +961,8 @@ module SeriesControl
   def self.lookup_files_taking_space
     all_images = Dir.glob("#{ Image.basedir }/*.img")
     all_rdiffs = Dir.glob("#{ Diff.basedir  }/*.rdiff")
-
-    hardlinked_system_images = [
-      File.join(Image.basedir, 'ltsp.img'),
-      File.join(Image.basedir, 'ltsp-backup.img'),
-    ]
-
     all_files = all_images + all_rdiffs
-
-    # we reject files that are our system images or have a hardlink count
-    # of more than one or that have a corresponding .lock file
-    files_to_manage = all_files.reject do |fp|
-                                  hardlinked_system_images.include?(fp) \
-                                    || File.stat(fp).nlink > 1 \
-                                    || File.exists?('%s.lock' % fp)
-                                end
+    files_to_manage = all_files.reject { |fp| is_protected_file?(fp) }
 
     filesizes_by_filename = {}
     files_to_manage.each do |filepath|
