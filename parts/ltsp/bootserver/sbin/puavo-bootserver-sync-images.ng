@@ -17,6 +17,11 @@ def log(level, channel, priority, msg, color)
   channel.puts(outmsg)
 end
 
+def format_integer(integer)
+  num_groups = integer.to_s.chars.to_a.reverse.each_slice(3)
+  num_groups.map(&:join).join(',').reverse
+end
+
 def prefixed_logmsg(level, msg)
   spacecount = [5, [5-level, 0].max ].min       # (5-level between [0,5])
   arrowcount = [0, [  level, 5].min ].max       # (  level between [0,5])
@@ -693,18 +698,20 @@ module SeriesControl
         next unless files_taking_space[ syncfile.filename ]
 
         syncfiles_to_delete.append(syncfile)
-        fmt = 'Choosing %s (priority=%.3f size=%d) for deletion as there is' \
-                + ' no space available (only %d bytes)'
+        fmt = 'Choosing %s (priority=%.3f size=%s) for deletion as there is' \
+                + ' no space available (only %s bytes)'
         msg = sprintf(fmt, syncfile.filename, syncfile.priority.value,
-                      syncfile.size, space_available)
+                      format_integer(syncfile.size),
+                      format_integer(space_available))
         warning(4, msg)
         next
       end
 
-      fmt = 'Choosing %s (priority=%.3f size=%d) for sync,' \
-              + ' %d bytes are available'
+      fmt = 'Choosing %s (priority=%.3f size=%s) for sync,' \
+              + ' %s bytes are available'
       msg = sprintf(fmt, syncfile.filename, syncfile.priority.value,
-                    syncfile.size, space_available)
+                    format_integer(syncfile.size),
+                    format_integer(space_available))
       info(4, msg, HighLine::GREEN)
       syncfiles_to_sync.append(syncfile)
       space_available -= syncfile.size
