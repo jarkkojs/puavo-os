@@ -88,6 +88,7 @@ class SyncState
 end
 
 class SyncFile
+  attr_accessor :priority
   attr_reader :filename
 
   def initialize(filename, dir=nil)
@@ -96,6 +97,7 @@ class SyncFile
 
     @basedir  = dir || self.class.basedir
     @filename = File.basename(filename)
+    @priority = nil
   end
 
   def all_possible_paths
@@ -108,32 +110,41 @@ class SyncFile
   def backward_diff_penalizer; return 1; end
 
   def delete
-    return self.delete_files(all_possible_paths)
+    return self.class.delete_files(all_possible_paths, 3)
   end
 
-  def self.delete_files(filelist)
+  def self.delete_files(filelist, infolevel=4)
     all_deleted_ok = true
 
     filelist.each do |path|
       next unless File.exists?(path)
 
       if File.exists?("#{ path }.lock") then
-        warning(4, "Not deleting #{ path } because it has .lock")
+        warning(infolevel, "Not deleting #{ path } because it has .lock")
+        all_deleted_ok = false
+        next
+      end
+
+      # Hardlinked files may be system images or some admin may be doing
+      # interesting things.
+      if File.stat(path).nlink > 1 then
+        warning(infolevel, "Not deleting #{ path } because it has hardlinks")
         all_deleted_ok = false
         next
       end
 
       if $config[:dry_run] then
-        info(4, "Not deleting #{ path } (dry-run)")
+        info(infolevel, "Not deleting file at #{ path } (dry-run)",
+             HighLine::YELLOW)
         next
       end
 
-      info(4, "Deleting #{ path }")
+      info(4, "Deleting file at #{ path }", HighLine::YELLOW)
       begin
         File.delete(path)
       rescue StandardError => e
         all_deleted_ok = false
-        warning(3, "Could not delete #{ path }: #{ e.message }")
+        warning(infolevel-1, "Could not delete #{ path }: #{ e.message }")
       end
     end
 
@@ -162,7 +173,6 @@ class SyncFile
 end
 
 class SyncFileWithMetadata < SyncFile
-  attr_accessor :priority
   attr_reader :cksum, :size
 
   def initialize(cksum, filename, sha256, size, urls)
@@ -198,8 +208,8 @@ class SyncFileWithMetadata < SyncFile
       device_adjustment = devices.count * device_importance_map[device_type]
 
       unless $log_deduplicator[@filename] then
-        msg = sprintf("%s required by %d %s%s (adjusting by %d) :: %s",
-                      @filename, devices.count, device_type,
+        msg = sprintf('%s %s required by %d %s%s (adjusting by %d) :: %s',
+                      synctype, @filename, devices.count, device_type,
                       (devices.count == 1 ? '' : 's'), device_adjustment,
                       devices.sort.join(' '))
         info(4, msg)
@@ -225,6 +235,7 @@ class SyncFileWithMetadata < SyncFile
     @urls.each do |url|
       begin
         download_from_url(url)
+        info(3, "Download of #{ @filename } successful", HighLine::GREEN)
         return true
       rescue StandardError => e
         warning(2, "Error downloading #{ url }: #{ e.message }")
@@ -277,7 +288,7 @@ class SyncFileWithMetadata < SyncFile
             if progress != new_progress then
               progress = new_progress
               msg = 'Download progress: %3d%%' % [progress]
-              print("\r" + prefixed_logmsg(1, msg))
+              print("\r" + prefixed_logmsg(2, msg))
             end
           end
         end
@@ -470,28 +481,28 @@ class Image < SyncFileWithMetadata
   # available and if none is found, then the smallest sized diff for an
   # existing baseimage is downloaded.
   def patch_from_old
-    inplace_mindiffs = diffs.select { |diff| diff.inplace? } \
-                            .sort_by { |diff| diff.size }
+    inplace_diffs_smallest_first \
+      = diffs.select { |diff| diff.inplace? && diff.baseimage.inplace? } \
+             .sort_by { |diff| diff.size }
 
     msg = sprintf('Trying to patch a new image (%s) from existing images' \
                     + ' and diffs', @filename)
     info(3, msg)
 
-    inplace_mindiffs.each do |diff|
-      info(3, "Trying to patch with #{ diff.filename }")
-      # XXX should not try patching if source image is missing (or at least
-      # XXX not show an error in that case)
+    inplace_diffs_smallest_first.each do |diff|
+      info(2, "Trying to patch with #{ diff.filename }")
       if diff.apply() && verify() then
-        info(2, ' ... patching done.')
+        info(1, ' ... patching done.')
         return true
       end
-      warning(2, ' ... error when patching.')
+      warning(1, ' ... error when patching.')
     end
 
-    explanation_msg = inplace_mindiffs.empty? \
+    explanation_msg = inplace_diffs_smallest_first.empty? \
                         ? 'no diffs to patch from' \
                         : 'patching attempts failed'
-    info(3, "Could not patch from an old image (#{ explanation_msg })")
+    info(2, "Could not patch from an old image (#{ explanation_msg })",
+         HighLine::YELLOW)
 
     return false
   end
@@ -533,6 +544,8 @@ class Image < SyncFileWithMetadata
   end
 
   def size_penalizer; (1.0 * @size) / 2**33; end
+
+  def synctype; return 'Image'; end
 end
 
 class Diff < SyncFileWithMetadata
@@ -549,7 +562,7 @@ class Diff < SyncFileWithMetadata
   def self.basedir; "#{ $config[:download_path] }/rdiffs"; end
 
   def apply
-    return @baseimage.verify() && do_patching
+    return @baseimage.inplace? && do_patching
   end
 
   def backward_diff_penalizer
@@ -578,7 +591,7 @@ class Diff < SyncFileWithMetadata
 
     File.rename(temp_target, target)
 
-    info(1, "Moved #{ temp_target } to #{ target }")
+    info(2, "Moved #{ temp_target } to #{ target }")
 
     return true
   end
@@ -604,6 +617,8 @@ class Diff < SyncFileWithMetadata
   end
 
   def size_penalizer; (1.0 * @size) / 2**30; end
+
+  def synctype; return 'Diff'; end
 end
 
 class Series
@@ -681,8 +696,8 @@ module SeriesControl
   def self.determine_files_to_sync_and_files_to_delete
     info(5, 'Determining files to sync and files to delete')
 
-    syncfiles_to_delete = []
-    syncfiles_to_sync   = []
+    syncfiles_to_delete_priority_order = []
+    syncfiles_to_sync                  = []
 
     files_in_priority_order = get_files_with_highest_priority_first()
     log_files_in_priority_order(files_in_priority_order)
@@ -696,14 +711,15 @@ module SeriesControl
     files_in_priority_order.each do |syncfile|
       if syncfile.size > space_available then
         next unless files_taking_space[ syncfile.filename ]
+        files_taking_space.delete(syncfile.filename)
 
-        syncfiles_to_delete.append(syncfile)
-        fmt = 'Choosing %s (priority=%.3f size=%s) for deletion as there is' \
+        syncfiles_to_delete_priority_order.append(syncfile)
+        fmt = 'Marking %s (priority=%.3f size=%s) for deletion as there is' \
                 + ' no space available (only %s bytes)'
         msg = sprintf(fmt, syncfile.filename, syncfile.priority.value,
                       format_integer(syncfile.size),
                       format_integer(space_available))
-        warning(4, msg)
+        info(4, msg, HighLine::YELLOW)
         next
       end
 
@@ -727,18 +743,41 @@ module SeriesControl
     files_taking_space.each do |filename, size|
       next if files_to_sync.has_key?(filename)
 
-      msg = sprintf('Going to delete unmanaged file %s (freeing %d bytes)',
-                    filename, size)
-      warning(4, msg)
+      msg = sprintf('Going to delete unmanaged file %s (freeing %s bytes)',
+                    filename, format_integer(size))
+      info(4, msg, HighLine::YELLOW)
 
       # setup a simple syncfile only for deletion
       syncfile = filename.match(/\.img$/) \
                    ? SyncFile.new(filename, Image.basedir) \
                    : SyncFile.new(filename, Diff.basedir)
-      syncfiles_to_delete.append(syncfile)
+      syncfiles_to_delete_priority_order.append(syncfile)
     end
 
+    # These are from highest priority to lowest.  On deletion we want to
+    # delete files with the lowest priority first so we reverse.
+    syncfiles_to_delete = syncfiles_to_delete_priority_order.reverse
+
     return syncfiles_to_sync, syncfiles_to_delete
+  end
+
+  def self.ensure_space(needed_space_in_bytes, syncfiles_to_delete)
+    until syncfiles_to_delete.empty? do
+      free_diskspace = lookup_free_diskspace()
+      usable_diskspace = free_diskspace - $config[:space_reserved]
+      break unless usable_diskspace < needed_space_in_bytes
+      syncfile = syncfiles_to_delete.shift
+      msg = sprintf('Deleting %s to make space (need %s bytes,' \
+                      + ' got %s bytes (%s - %s)',
+                    syncfile.filename, format_integer(needed_space_in_bytes),
+                    format_integer(usable_diskspace),
+                    format_integer(free_diskspace),
+                    format_integer($config[:space_reserved]))
+      info(4, msg, HighLine::YELLOW)
+      syncfile.delete()
+    end
+
+    return syncfiles_to_delete
   end
 
   # Load series json definition files
@@ -873,12 +912,12 @@ module SeriesControl
       school_dn       = device['school_dn']
 
       if !hostname || hostname.empty? then
-        warning(3, "There is a device in Puavo (#{ puavo_id }) that does not" \
+        warning(4, "There is a device in Puavo (#{ puavo_id }) that does not" \
                      + ' have a hostname')
         next
       end
       if !school_dn || school_dn.empty? then
-        warning(3, "Host #{ hostname } is not associated with any school," \
+        warning(4, "Host #{ hostname } is not associated with any school," \
                      + ' ignoring.')
         next
       end
@@ -904,7 +943,7 @@ module SeriesControl
             diff = get_diff_filename(current_image, preferred_image)
             (requirements[:diffs][:laptop][diff] ||= []).append(hostname)
           rescue StandardError => e
-            warning(3,
+            warning(4,
                     "Error in determining diff filename for #{ hostname }:" \
                       + " #{ e.message }")
           end
@@ -952,8 +991,9 @@ module SeriesControl
     info(5, 'Listing file priorities:')
     files_in_priority_order.each do |syncfile|
       next unless syncfile.priority.value > 0
-      msg = sprintf('File %s has priority %s = %.3f', syncfile.filename,
-                    syncfile.priority.calculation, syncfile.priority.value)
+      msg = sprintf('%s %s has priority %s = %.3f', syncfile.synctype,
+                    syncfile.filename, syncfile.priority.calculation,
+                    syncfile.priority.value)
       info(4, msg)
     end
   end
@@ -1045,19 +1085,14 @@ module SeriesControl
     syncfiles_to_sync, syncfiles_to_delete \
       = determine_files_to_sync_and_files_to_delete()
 
-    info(5, 'Deleting files')
-    syncfiles_to_delete.each do |syncfile|
-      syncfile.delete
-    end
-
-    if !sync(syncfiles_to_sync) then
+    if !sync(syncfiles_to_sync, syncfiles_to_delete) then
       return false
     end
 
     return true
   end
 
-  def self.sync(syncfiles_to_sync)
+  def self.sync(syncfiles_to_sync, syncfiles_to_delete)
     unless $config[:dry_run] then
       FileUtils.mkdir_p(Image.basedir)
       FileUtils.mkdir_p(Diff.basedir)
@@ -1071,6 +1106,7 @@ module SeriesControl
 
     info(5, 'Syncing diffs')
     diffs_to_sync.each do |diff|
+      syncfiles_to_delete = ensure_space(diff.size, syncfiles_to_delete)
       info(4, "Syncing #{ diff.filename }")
       unless diff.materialize then
         all_syncs_ok = false
@@ -1079,6 +1115,7 @@ module SeriesControl
 
     info(5, 'Syncing images')
     images_to_sync.each do |image|
+      syncfiles_to_delete = ensure_space(image.size, syncfiles_to_delete)
       info(4, "Syncing #{ image.filename }")
       unless image.materialize then
         all_syncs_ok = false
