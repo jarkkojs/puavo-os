@@ -1258,7 +1258,7 @@ module SeriesControl
       end
     end
 
-    all_series = all_series_list.reduce(&:merge) || []
+    all_series = all_series_list.reduce(&:merge) || {}
 
     if all_series.empty? then
       raise "No series information, can not do anything"
