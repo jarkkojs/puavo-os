@@ -845,7 +845,8 @@ module SeriesControl
     files_taking_space.each do |filename, size|
       next if files_to_sync.has_key?(filename)
 
-      msg = sprintf('Going to delete unmanaged file %s (freeing %s bytes)',
+      msg = sprintf('In case we need more space we may delete %s' \
+                      + ' (freeing %s bytes)',
                     filename, format_integer(size))
       info(4, msg, HighLine::YELLOW)
 
