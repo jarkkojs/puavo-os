@@ -8,6 +8,49 @@ require 'puavo/etc'
 require 'puavo/rest-client'
 require 'syslog'
 
+def usage
+  puts <<'EOF'
+puavo-bootserver-sync-images
+  options:
+    --download-path dir        manage this directory [/images]
+    --dry-run                  do nothing but tell the plans
+    --force-verify             verify files that are already in place
+    --help                     show help
+    --space-reserved number    reserved space in bytes [1073741824]
+
+This script manages system images on a bootserver for use with fatclients
+and for locally installed clients such as laptops that can download
+images/diffs for their use.
+
+This script will delete images and diffs that are not needed unless
+those have been locked by creating a file with matching path but
+with a ".lock"-suffix added.  System images (normal and backup) are
+never removed, also files that have multiple hard links are not removed.
+
+Steps done by the script:
+  1. Check image series source URLs from Puavo
+  2. Load image series description JSON files from specified URLs
+  3. Prioritize files to download and keep.
+      a. The image needed by the bootserver itself is prioritized very high.
+      b. The newer images and diffs in every series are prioritized higher
+         than older images.
+      c. Forwards diffs are prioritized higher than backward diffs.
+      d. Devices that belong to the schools served by this server affect
+         priorizations.  Fatclients want images only and laptops want both
+         images and diffs.
+  4. Start syncing files, diffs first and then images.
+      a. Sync order is files with highest priority first.
+      b. If there is not enough space, remove files with the lowest priority.
+      c. Image and diff files not belonging to any used series will have
+         the lowest priority.
+      d. Diffs may be used to construct images from other images.
+      e. Create torrent files for diffs after they have been successfully
+         installed.
+  5. Run /usr/local/lib/puavo-handle-image-changes whenever images
+     are installed and at the end to trigger necessary configuration updates.
+EOF
+end
+
 def log(level, channel, priority, msg, color)
   logmsg = prefixed_logmsg(level, msg)
 
@@ -1211,9 +1254,15 @@ begin
     end
     opts.on('--space-reserved',
             'The amount of space reserved in bytes') do |value|
-      raise "could not interpret #{ value } as an integer" \
-        unless value.match(/\A\d+\z/)
+      unless value.kind_of?(String) && value.match(/\A\d+\z/) then
+        usage
+        exit 1
+      end
       $config[:space_reserved] = Integer(value)
+    end
+    opts.on_tail('--help', 'Show help') do
+      usage
+      exit 0
     end
   end
   parser.parse!
