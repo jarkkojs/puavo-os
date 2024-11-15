@@ -1,6 +1,8 @@
 #!/usr/bin/ruby
 
+require 'digest'
 require 'filesystem'
+require 'fileutils'
 require 'highline/import'
 require 'json'
 require 'net/http'
@@ -122,6 +124,11 @@ class SyncState
     @state = :unknown
   end
 
+  def message(filename)
+    return (StatesAndMessages[@state] || StatesAndMessages[:unknown]) \
+             % [ filename ]
+  end
+
   def state=(new_state)
     raise "Unsupported state #{ new_state }" \
       unless StatesAndMessages.has_key?(new_state)
@@ -182,7 +189,7 @@ class SyncFile
         next
       end
 
-      info(4, "Deleting file at #{ path }", HighLine::YELLOW)
+      info(infolevel, "Deleting file at #{ path }", HighLine::YELLOW)
       begin
         File.delete(path)
       rescue StandardError => e
@@ -278,7 +285,6 @@ class SyncFileWithMetadata < SyncFile
     @urls.each do |url|
       begin
         download_from_url(url)
-        info(3, "Download of #{ @filename } successful", HighLine::GREEN)
         return true
       rescue StandardError => e
         warning(2, "Error downloading #{ url }: #{ e.message }")
@@ -393,6 +399,10 @@ class SyncFileWithMetadata < SyncFile
     # by default do nothing... (subclasses can override this)
   end
 
+  def statemsg
+    return @state.message(@filename)
+  end
+
   # Checks if the file in the filesystem has the same sha256 as the metadata.
   # To speed up things, the filesize needs to match before sha256 is
   # calculated.  The results are cached and rechecked only if file mtime
@@ -403,7 +413,6 @@ class SyncFileWithMetadata < SyncFile
     # verify anyway).
     if inplace? then
       @state.state = :inplace
-      info(3, "#{ @filename } is in place", HighLine::GREEN)
       return true unless $config[:force_verify]
       path_to_verify = final_path
     else
@@ -711,7 +720,56 @@ class Series
 end
 
 class Torrents
+  Torrent_https_port = 873
+
+  def initialize(puavo_etc)
+    fqdn = "#{ puavo_etc.hostname }.#{ puavo_etc.domain }"
+    @this_server_baseurl = "https://#{ fqdn }:#{ Torrent_https_port }/rdiffs"
+    @torrent_paths = {}
+  end
+
   def self.basedir; "#{ $config[:download_path] }/torrents"; end
+
+  def make(syncfile)
+    src_path = "#{ syncfile.class.basedir }/#{ syncfile.filename }"
+    torrent_filename = "#{ syncfile.filename }.torrent"
+    target_path = "#{ self.class.basedir }/#{ torrent_filename }"
+
+    @torrent_paths[target_path] = 1
+
+    return if File.exists?(target_path)
+
+    tmpfile = "#{ target_path }.tmp"
+
+    url = "#{ @this_server_baseurl }/#{ syncfile.filename }"
+    cmd_args = [ 'mktorrent', '-o', tmpfile, '-w', url, src_path ]
+    fd_redirects = { :in  => '/dev/null',
+                     :out => '/dev/null',
+                     :err => '/dev/null' }
+
+    if !system(*cmd_args, fd_redirects) then
+      raise "command '#{ cmd_args.join(' ') }' returned error"
+    end
+
+    File.rename(tmpfile, target_path)
+
+    info(3, "Made a new torrent file #{ target_path }", HighLine::GREEN)
+  end
+
+  def remove_unused
+    begin
+      Dir.glob("#{ self.class.basedir }/*.torrent") do |filepath|
+        next if @torrent_paths[filepath]
+        begin
+          File.delete(filepath)
+          info(3, "Removed unused torrent file '#{ filepath }'")
+        rescue Errno::ENOENT
+        end
+      end
+    rescue StandardError => e
+      warning(4, 'Error in cleaning up unused torrent files')
+    end
+  end
 end
 
 module SeriesControl
@@ -728,10 +786,11 @@ module SeriesControl
 
   def self.cleanup_tempfiles
     info(5, 'Cleaning up temporary files')
-    glob_patterns = [ File.join(Image.basedir, '*.partial'),
-                      File.join(Image.basedir, '*.unverified'),
-                      File.join(Diff.basedir,  '*.partial'),
-                      File.join(Diff.basedir,  '*.unverified') ]
+    glob_patterns = [ File.join(Image.basedir,    '*.partial'),
+                      File.join(Image.basedir,    '*.unverified'),
+                      File.join(Diff.basedir,     '*.partial'),
+                      File.join(Diff.basedir,     '*.unverified'),
+                      File.join(Torrents.basedir, '*.tmp') ]
     tempfiles = glob_patterns.map { |pattern| Dir.glob(pattern) }.flatten
     SyncFile.delete_files(tempfiles)
   end
@@ -1147,21 +1206,39 @@ module SeriesControl
     diffs_to_sync  = syncfiles_to_sync.select { |sf| sf.class == Diff  }
     images_to_sync = syncfiles_to_sync.select { |sf| sf.class == Image }
 
+    torrents = Torrents.new(@etc)
+
     info(5, 'Syncing diffs')
     diffs_to_sync.each do |diff|
       syncfiles_to_delete = ensure_space(diff.size, syncfiles_to_delete)
       info(4, "Syncing #{ diff.filename }")
-      unless diff.materialize then
+      if diff.materialize then
+        info(3,  "Diff sync OK: #{ diff.statemsg }", HighLine::GREEN)
+        begin
+          torrents.make(diff)
+        rescue StandardError => e
+          msg = sprintf('Could not make a torrent for %s: %s', diff.filename,
+                        e.message)
+          warning(3, msg)
+          all_syncs_ok = false
+        end
+      else
         all_syncs_ok = false
+        warning(3, "Diff sync FAILED: #{ diff.statemsg }")
       end
     end
+
+    torrents.remove_unused()
 
     info(5, 'Syncing images')
     images_to_sync.each do |image|
       syncfiles_to_delete = ensure_space(image.size, syncfiles_to_delete)
       info(4, "Syncing #{ image.filename }")
-      unless image.materialize then
+      if image.materialize then
+        info(3, "Image sync OK: #{ image.statemsg }", HighLine::GREEN)
+      else
         all_syncs_ok = false
+        warning(3, "Image sync FAILED: #{ image.statemsg }")
       end
     end
 
