@@ -18,6 +18,7 @@ g_puavo_pkg_cachedir=/var/cache/puavo-pkg
 g_puavo_pkg_rootdir=/var/lib/puavo-pkg
 g_puavo_pkg_readonly_cachedir="$g_puavo_pkg_cachedir"
 g_puavo_pkg_readonly_rootdir="$g_puavo_pkg_rootdir"
+g_puavo_pkg_delete_cache_after_days=14
 
 # These can not be overridden with PUAVO_PKG_ROOTDIR by design
 # (we could also move it somewhere else than /var/lib/puavo-pkg/*).
@@ -207,8 +208,8 @@ gc_installations() {
 }
 
 gc_upstream_packs() {
-  local cache_subdir gc_status old_upstream_pack old_upstream_pack_list \
-        upstream_pack_path
+  local cache_subdir delete_if_older_than gc_status last_modified \
+        old_upstream_pack old_upstream_pack_list time_now upstream_pack_path
 
   [ -n "$g_puavo_pkg_cachedir" ] || return 0
 
@@ -217,6 +218,32 @@ gc_upstream_packs() {
   # remove possible temporary files in upstream pack cache
   rm -f "$g_puavo_pkg_cachedir"/upstream_packs/*/*.tmp 2>/dev/null || true
 
+  # remove upstream packs in case their last modification time is over
+  # ${g_puavo_pkg_delete_cache_after_days} days
+  if ! time_now=$(date +%s); then
+    log_error 'could not lookup time'
+    gc_status=$SC_ERR
+    return 1
+  fi
+  delete_if_older_than=$((${time_now} - ${g_puavo_pkg_delete_cache_after_days} * 24 * 60 * 60))
+  for upstream_pack_path in "$g_puavo_pkg_cachedir"/upstream_packs/*/*; do
+    test -f "$upstream_pack_path" || continue
+    if ! last_modified=$(stat -c %Y "$upstream_pack_path"); then
+      log_error "could not lookup last modified time of ${upstream_pack_path}"
+      gc_status=$SC_ERR
+      continue
+    fi
+    if [ "$last_modified" -lt "$delete_if_older_than" ]; then
+      if rm -f "$upstream_pack_path"; then
+        log_info "removed stale pack ${upstream_pack_path} from cache"
+      else
+        log_error "error removing stale pack ${upstream_pack_path} from cache"
+        gc_status=$SC_ERR
+      fi
+    fi
+  done
+
+  # keep only one of the remaining ones
   for cache_subdir in "$g_puavo_pkg_cachedir"/upstream_packs/*; do
     test -d "$cache_subdir" || continue
 
@@ -226,10 +253,11 @@ gc_upstream_packs() {
       if rm -f "$upstream_pack_path"; then
         log_info "removed old pack ${upstream_pack_path} from cache"
       else
-        log_error "error removing ${upstream_pack_path} from cache"
+        log_error "error removing old pack ${upstream_pack_path} from cache"
         gc_status=$SC_ERR
       fi
     done
+    rmdir --ignore-fail-on-non-empty "$cache_subdir" 2>/dev/null || true
   done
 
   if [ "$gc_status" = "$SC_ERR" ]; then
@@ -1196,6 +1224,9 @@ if [ -r /etc/puavo-pkg/puavo-pkg.conf ]; then
   fi
   if [ ! -z ${PUAVO_PKG_READONLY_ROOTDIR+x} ]; then
     g_puavo_pkg_readonly_rootdir="$PUAVO_PKG_READONLY_ROOTDIR"
+  fi
+  if [ ! -z ${PUAVO_PKG_DELETE_CACHE_AFTER_DAYS+x} ]; then
+    g_puavo_pkg_delete_cache_after_days="$PUAVO_PKG_DELETE_CACHE_AFTER_DAYS"
   fi
 fi
 
