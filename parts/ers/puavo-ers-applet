@@ -474,7 +474,10 @@ class PuavoErsApplet:
       with open(EXAMS_JSON_FILE) as file:
         error_no_exams = False
         try:
-          new_exams = json.load(file)
+          exams_information = json.load(file)
+          if not 'schedules' in exams_information:
+            raise Exception('schedules field is missing')
+          new_exams = exams_information['schedules']
         except Exception as e:
           error_no_exams = True
           new_exams = []
@@ -794,17 +797,29 @@ class PuavoErsExamSync (threading.Thread):
   def sync_exams(self):
     syslog.syslog(syslog.LOG_INFO, 'requesting for new exams')
 
-    response = self.exam_server.get('/v1/schedules/query_exam_server_schedule')
+    response = self.exam_server.get('/v2/schedules/exam_packages')
     if not response or response.status_code != requests.codes.ok:
       raise Exception('could not get exam schedules from server')
 
-    exams_json = response.content.decode('utf-8')
-    self.update_exams_json_on_disk(exams_json)
+    exams_response_json = response.content.decode('utf-8')
+    exams_information = json.loads(exams_response_json)
+
+    if not 'packages' in exams_information:
+      raise Exception('packages information is missing')
+    if not isinstance(exams_information['packages'], dict):
+      raise Exception('packages is not a dict')
+    if not 'schedules' in exams_information:
+      raise Exception('schedules field is missing')
+    if not isinstance(exams_information['schedules'], list):
+      raise Exception('schedules is not a list')
+
+    self.update_exams_json_on_disk(exams_response_json)
 
     fatal_errors = False
 
     exam_name_list = []
-    for exam in json.loads(exams_json):
+    schedules_list = exams_information['schedules']
+    for exam in schedules_list:
       try:
         exam_file_name = exam['file_name']
         if not isinstance(exam_file_name, str):
@@ -1081,7 +1096,10 @@ class PuavoErsExamSorter (threading.Thread):
 
     try:
       with open(EXAMS_JSON_FILE) as file:
-        all_exams = json.load(file)
+        exams_information = json.load(file)
+        if not 'schedules' in exams_information:
+          raise Exception('schedules field is missing')
+        all_exams = exams_information['schedules']
     except OSError as e:
       if e.errno != errno.ENOENT:
         raise e
