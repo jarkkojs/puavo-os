@@ -947,19 +947,16 @@ class PuavoErsExamControl (threading.Thread):
                     server_version):
     self.send_status_update_lock.acquire()
 
-    new_status = {
+    self.status = {
       'monitoring_passphrase': monitoring_passphrase,
       'server_version':        server_version,
       'status':                new_abitti_status,
     }
 
-    if self.status != new_status:
-      self.status = new_status
-      syslog.syslog(syslog.LOG_INFO,
-                    'received status update from exam scheduler')
-      self.local_status_updated = True
-      self.send_status_update_lock.notify()
-
+    syslog.syslog(syslog.LOG_INFO,
+                  'received status update from exam scheduler')
+    self.local_status_updated = True
+    self.send_status_update_lock.notify()
     self.send_status_update_lock.release()
 
 
