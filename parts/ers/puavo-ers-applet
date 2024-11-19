@@ -1330,7 +1330,15 @@ class PuavoErsExamScheduler (threading.Thread):
     try:
       exams_seen = {}
 
+      if not 'decrypt' in output:
+        raise Exception('decrypt field is missing from response')
+
       for decrypt in output['decrypt']:
+        if not 'mebs' in decrypt:
+          syslog.syslog(syslog.LOG_ERR,
+                       'exam decrypt missing a list of mebs')
+          continue
+
         for exam in decrypt['mebs']:
           if exam in exams_seen:
             continue
