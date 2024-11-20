@@ -57,6 +57,24 @@ current_exams_set = None
 current_zip_name = None
 
 
+def iso_as_timezone(isoformat_string):
+  try:
+    return datetime.datetime.fromisoformat(isoformat_string).astimezone()
+  except Exception as e:
+    syslog.syslog(syslog.LOG_WARNING,
+                  'error converting %s to datetime object: %s' \
+                    % (isoformat_timestring, e))
+    raise e
+
+
+def iso_to_local_date(isoformat_string):
+    return iso_as_timezone(isoformat_string).date()
+
+
+def iso_to_local_datetime(isoformat_string):
+    return iso_as_timezone(isoformat_string).replace(tzinfo=None)
+
+
 def puavoconf_get(puavoconf_key):
   return subprocess.check_output([ 'puavo-conf', puavoconf_key ]).rstrip() \
                    .decode('utf-8')
@@ -521,7 +539,7 @@ class PuavoErsApplet:
         continue
 
       # do not show passwords for old exams
-      exam_end_time = datetime.datetime.fromtimestamp(exam['end_time'])
+      exam_end_time = iso_to_local_datetime(exam['end_time'])
       if exam_end_time < datetime.datetime.now():
         continue
 
@@ -866,10 +884,12 @@ class PuavoErsExamSync (threading.Thread):
   def sync_one_exam(self, exam_file_name, exam):
     exam_file_path = os.path.join(EXAMS_DIR, exam_file_name)
 
-    exam_modified = exam['modified_at']
-    if type(exam_modified) != int:
-      raise Exception('exam modified time is not an integer for %s' \
-                        % exam_file_name)
+    try:
+      exam_modified = datetime.datetime.fromisoformat(exam['exam_modified_at']) \
+                              .timestamp()
+    except Exception as e:
+      raise Exception('could not interpret exam modified time for %s: %s' \
+                        % (exam_file_name, e))
 
     try:
       exam_file_modified = os.path.getmtime(exam_file_path)
@@ -988,8 +1008,8 @@ class ExamSet:
 
   def update_earliest_and_latest(self):
     for exam in self.exams:
-      exam_start_time = datetime.datetime.fromtimestamp(exam['start_time'])
-      exam_end_time   = datetime.datetime.fromtimestamp(exam['end_time'])
+      exam_start_time = iso_to_local_datetime(exam['start_time'])
+      exam_end_time   = iso_to_local_datetime(exam['end_time'])
       exam_load_time  = exam_start_time - PRELOAD_TIMEDELTA
 
       if not self.earliest_load_time \
@@ -1015,8 +1035,8 @@ class ExamSet:
 
       candidate_accepted = False
       for exam in list(candidate_exams):
-        exam_start_time = datetime.datetime.fromtimestamp(exam['start_time'])
-        exam_end_time   = datetime.datetime.fromtimestamp(exam['end_time'])
+        exam_start_time = iso_to_local_datetime(exam['start_time'])
+        exam_end_time   = iso_to_local_datetime(exam['end_time'])
         exam_load_time  = exam_start_time - PRELOAD_TIMEDELTA
 
         if exam_load_time <= self.latest_end_time \
@@ -1122,11 +1142,11 @@ class PuavoErsExamSorter (threading.Thread):
           raise Exception('ignoring exam with a file name %s' \
                             % exam['file_name'])
 
-        exam_start_day  = datetime.date.fromtimestamp(exam['start_time'])
-        exam_start_time = datetime.datetime.fromtimestamp(exam['start_time'])
+        exam_start_day  = iso_to_local_date(exam['start_time'])
+        exam_start_time = iso_to_local_datetime(exam['start_time'])
 
-        exam_end_day    = datetime.date.fromtimestamp(exam['end_time'])
-        exam_end_time   = datetime.datetime.fromtimestamp(exam['end_time'])
+        exam_end_day    = iso_to_local_date(exam['end_time'])
+        exam_end_time   = iso_to_local_datetime(exam['end_time'])
 
         if exam_end_day < self.current_day:
           archived_exams_filenames.append(exam['file_name'])
