@@ -50,7 +50,7 @@ EXAMS_DIR          = os.path.join(KTP_JAKO_DIR, '.exams')
 EXAMS_JSON_FILE    = os.path.join(KTP_JAKO_DIR, '.exams.json')
 EXAMS_UPCOMING_DIR = os.path.join(KTP_JAKO_DIR, 'Tulevat')
 
-PRELOAD_TIMEDELTA = datetime.timedelta(minutes=10)
+PRELOAD_TIMEDELTA = datetime.timedelta(minutes=15)
 
 exam_scheduler_lock = threading.Lock()
 current_exams_set = None
@@ -354,8 +354,8 @@ class PuavoErsApplet:
     self.menu.show_all()
 
     self.exam_server = PuavoExamServer()
-    self.exam_sorter = PuavoErsExamSorter(self.exam_sync_active)
-    self.exam_sync = PuavoErsExamSync(self.exam_server, self.exam_sorter,
+    self.exam_manager = PuavoErsExamManager(self.exam_sync_active)
+    self.exam_sync = PuavoErsExamSync(self.exam_server, self.exam_manager,
                                       self.exam_sync_active)
     self.exam_control = PuavoErsExamControl(self.exam_server)
     self.exam_scheduler = PuavoErsExamScheduler(self.exam_control)
@@ -364,7 +364,7 @@ class PuavoErsApplet:
 
     self.exam_server.start()
     self.exam_sync.start()
-    self.exam_sorter.start()
+    self.exam_manager.start()
     self.exam_control.start()
     self.exam_scheduler.start()
 
@@ -651,8 +651,8 @@ class PuavoErsApplet:
     self.exam_sync_active = False
     self.save_configuration()
 
-    self.exam_sorter.exam_sorter_enabled = False
-    self.exam_sync.exam_sync_enabled     = False
+    self.exam_manager.exam_manager_enabled = False
+    self.exam_sync.exam_sync_enabled = False
     self.update_decrypt_codes(True)
 
     syslog.syslog(syslog.LOG_INFO, 'exam sync is now disabled')
@@ -667,8 +667,8 @@ class PuavoErsApplet:
 
     self.exam_sync.trigger_sync_exams()
 
-    self.exam_sorter.exam_sorter_enabled = True
-    self.exam_sync.exam_sync_enabled     = True
+    self.exam_manager.exam_manager_enabled = True
+    self.exam_sync.exam_sync_enabled = True
     self.update_decrypt_codes(True)
 
     syslog.syslog(syslog.LOG_INFO, 'exam sync is now enabled')
@@ -771,11 +771,11 @@ class DecryptCodesWindow:
 
 
 class PuavoErsExamSync (threading.Thread):
-  def __init__(self, exam_server, exam_sorter, is_active):
+  def __init__(self, exam_server, exam_manager, is_active):
     threading.Thread.__init__(self)
 
     self.exam_server = exam_server
-    self.exam_sorter = exam_sorter
+    self.exam_manager = exam_manager
     self.exam_sync_enabled = is_active
     self.do_exam_sync = False
     self.sync_exams_lock = threading.Condition()
@@ -862,7 +862,7 @@ class PuavoErsExamSync (threading.Thread):
         if os.stat(exam_path).st_nlink > 1:
           rm_f(exam_path)
 
-    self.exam_sorter.trigger_sort_exams()
+    self.exam_manager.trigger_manage_exams()
 
     if fatal_errors:
       raise Exception('there were errors when syncing exams')
@@ -995,139 +995,87 @@ class PuavoErsExamControl (threading.Thread):
     self.send_status_update_lock.release()
 
 
-class ExamSet:
-  def __init__(self, exams):
-    self.exams = exams
-
-    self.earliest_load_time  = None
-    self.earliest_start_time = None
-    self.latest_end_time     = None
-
-    self.update_earliest_and_latest()
-
-
-  def update_earliest_and_latest(self):
-    for exam in self.exams:
-      exam_start_time = iso_to_local_datetime(exam['start_time'])
-      exam_end_time   = iso_to_local_datetime(exam['end_time'])
-      exam_load_time  = exam_start_time - PRELOAD_TIMEDELTA
-
-      if not self.earliest_load_time \
-        or exam_load_time < self.earliest_load_time:
-          self.earliest_load_time = exam_load_time
-      if not self.earliest_start_time \
-        or exam_start_time < self.earliest_start_time:
-          self.earliest_start_time = exam_start_time
-      if not self.latest_end_time or (exam_end_time < self.latest_end_time):
-        self.latest_end_time = exam_end_time
-
-
-  def add_overlapping_exams(self, candidate_exams_arg):
-    candidate_exams = candidate_exams_arg.copy()
-
-    if len(self.exams) == 0:
-      return
-
-    while len(candidate_exams) > 0:
-      syslog.syslog(syslog.LOG_DEBUG,
-                    'checking exam timetable overlaps, %d exams left' \
-                      % len(candidate_exams))
-
-      candidate_accepted = False
-      for exam in list(candidate_exams):
-        exam_start_time = iso_to_local_datetime(exam['start_time'])
-        exam_end_time   = iso_to_local_datetime(exam['end_time'])
-        exam_load_time  = exam_start_time - PRELOAD_TIMEDELTA
-
-        if exam_load_time <= self.latest_end_time \
-          and self.earliest_load_time <= exam_end_time:
-            candidate_accepted = True
-
-        if candidate_accepted:
-          candidate_exams.remove(exam)
-          if not exam in self.exams:
-            self.exams.append(exam)
-          if exam_load_time < self.earliest_load_time:
-            self.earliest_load_time = exam_load_time
-          if exam_start_time < self.earliest_start_time:
-            self.earliest_start_time = exam_start_time
-          if self.latest_end_time < exam_end_time:
-            self.latest_end_time = exam_end_time
-          break
-
-      # If we have not managed to remove any exam from the candidate list,
-      # there can no more exams to check.
-      if not candidate_accepted:
-        break
-
-
-class PuavoErsExamSorter (threading.Thread):
+class PuavoErsExamManager (threading.Thread):
   def __init__(self, is_active):
     threading.Thread.__init__(self)
 
-    self.exam_sorter_enabled    = is_active
+    self.exam_manager_enabled   = is_active
     self.previous_current_exams = None
     self.previous_todays_exams  = None
 
-    self.do_sort_exams = True
-    self.sort_exams_lock = threading.Condition()
+    self.do_manage_exams = True
+    self.manage_exams_lock = threading.Condition()
 
 
   def run(self):
-    self.sort_exams_lock.acquire()
+    self.manage_exams_lock.acquire()
 
     while True:
       try:
-        syslog.syslog(syslog.LOG_DEBUG, 'in PuavoErsExamSorter run() loop')
+        syslog.syslog(syslog.LOG_DEBUG, 'in PuavoErsExamManager run() loop')
 
         # we do not check with while, because this can be run periodically
-        if not self.do_sort_exams:
-          self.sort_exams_lock.wait(timeout=600)
+        if not self.do_manage_exams:
+          self.manage_exams_lock.wait(timeout=600)
 
-        if self.exam_sorter_enabled:
+        if self.exam_manager_enabled:
           with exam_scheduler_lock:
-            self.sort_exams_to_dirs()
+            self.manage_exams()
         else:
-          syslog.syslog(syslog.LOG_INFO, 'exam sorter has been disabled')
+          syslog.syslog(syslog.LOG_INFO, 'exam manager has been disabled')
 
-        self.do_sort_exams = False
+        self.do_manage_exams = False
 
       except Exception as e:
-        syslog.syslog(syslog.LOG_ERR, 'error when sorting exams: %s' % e)
+        syslog.syslog(syslog.LOG_ERR, 'error when managing exams: %s' % e)
 
       time.sleep(10)
 
 
-  def trigger_sort_exams(self):
-    syslog.syslog(syslog.LOG_DEBUG, 'sort exams triggered')
-    self.sort_exams_lock.acquire()
-    self.do_sort_exams = True
-    self.sort_exams_lock.notify()
-    self.sort_exams_lock.release()
+  def trigger_manage_exams(self):
+    syslog.syslog(syslog.LOG_DEBUG, 'manage exams triggered')
+    self.manage_exams_lock.acquire()
+    self.do_manage_exams = True
+    self.manage_exams_lock.notify()
+    self.manage_exams_lock.release()
 
 
-  def sort_exams_to_dirs(self):
-    global current_exams_set
-
-    syslog.syslog(syslog.LOG_INFO, 'sorting exams in filesystem')
-
+  def manage_exams(self):
     self.current_day  = datetime.date.today()
     self.current_time = datetime.datetime.now()
 
     try:
       with open(EXAMS_JSON_FILE) as file:
         exams_information = json.load(file)
-        if not 'schedules' in exams_information:
-          raise Exception('schedules field is missing')
-        all_exams = exams_information['schedules']
     except OSError as e:
       if e.errno != errno.ENOENT:
         raise e
       return
 
+    try:
+      if not 'schedules' in exams_information:
+        raise Exception('schedules field is missing')
+      self.sort_exams_to_dirs( exams_information['schedules'] )
+    except Exception as e:
+      syslog.syslog(syslog.LOG_WARNING, 'error in sorting exams: %s' % e)
+
+    try:
+      if not 'packages' in exams_information:
+        raise Exception('packages field is missing')
+      if not 'schedules' in exams_information:
+        raise Exception('schedules field is missing')
+      self.setup_ongoing_exam_zip(exams_information['packages'],
+                                  exams_information['schedules'])
+    except Exception as e:
+      syslog.syslog(syslog.LOG_WARNING, 'error in setting up exams: %s' % e)
+
+
+  def sort_exams_to_dirs(self, exam_schedules):
+    global current_exams_set
+
+    syslog.syslog(syslog.LOG_INFO, 'sorting exams in filesystem')
+
     archived_exams_filenames = []
-    current_exams            = []
-    current_exams_filenames  = []
     todays_exams             = []
     todays_exams_filenames   = []
     upcoming_exams_filenames = []
@@ -1136,7 +1084,7 @@ class PuavoErsExamSorter (threading.Thread):
 
     fatal_errors = False
 
-    for exam in all_exams:
+    for exam in exam_schedules:
       try:
         if not re.match('^exam_.*\.me(b|x)$', exam['file_name']):
           raise Exception('ignoring exam with a file name %s' \
@@ -1156,24 +1104,9 @@ class PuavoErsExamSorter (threading.Thread):
           todays_exams.append(exam)
           todays_exams_filenames.append(exam['file_name'])
 
-        # Load new exams to server 10 minutes before they are scheduled
-        # to start.  Note that if exams are scheduled to have less than
-        # 10 minutes between them, add_overlapping_exams() below will consider
-        # them to be part of the same exam set (session).
-        if (exam_start_time - PRELOAD_TIMEDELTA) <= self.current_time \
-          and self.current_time < exam_end_time:
-            current_exams.append(exam)
-
       except Exception as e:
         syslog.syslog(syslog.LOG_ERR, 'could not handle an exam: %s' % e)
         fatal_errors = True
-
-    current_exams_set = ExamSet(current_exams)
-    current_exams_set.add_overlapping_exams(todays_exams)
-
-    for exam in current_exams_set.exams:
-      current_exams_filenames.append(exam['file_name'])
-      decrypt_codes_list.append(exam['decrypt_code'])
 
     self.handle_archive(archived_exams_filenames)
 
@@ -1182,8 +1115,6 @@ class PuavoErsExamSorter (threading.Thread):
 
     self.cleanup_exams(EXAMS_UPCOMING_DIR, upcoming_exams_filenames)
     self.link_exams_to_dir(EXAMS_UPCOMING_DIR, upcoming_exams_filenames)
-
-    self.zip_exams(current_exams_filenames, decrypt_codes_list)
 
     if fatal_errors:
       raise Exception('there were some problems when sorting exams')
@@ -1233,6 +1164,71 @@ class PuavoErsExamSorter (threading.Thread):
           syslog.syslog(syslog.LOG_ERR, 'could not find exam %s' % exam_path)
         else:
           raise e
+
+
+  def setup_ongoing_exam_zip(self, exam_packages, exam_schedules):
+    syslog.syslog(syslog.LOG_INFO, 'checking the ongoing exams zip')
+
+    current_package_id = None
+    current_package_info = None
+
+    if not isinstance(exam_packages, dict):
+      raise Exception('exam packages is not a dict')
+
+    # XXX we probably need package_id for returns, where should we store it?
+    # XXX (probably in a filesystem?)
+    for package_id, package_info in exam_packages.items():
+      package_start_time = iso_to_local_datetime(package_info['start_time'])
+      package_end_time   = iso_to_local_datetime(package_info['end_time'])
+      if (package_start_time - PRELOAD_TIMEDELTA) <= self.current_time \
+        and self.current_time < package_end_time:
+          current_package_id = package_id
+          current_package_info = package_info
+          break
+
+    current_exam_infos = []
+    if current_package_id:
+      if not 'schedules' in package_info:
+        raise Exception('schedules missing from package %s' \
+                          % current_package_id)
+      current_exam_schedules = package_info['schedules']
+      if not isinstance(current_exam_schedules, list):
+        raise Exception('current exam schedules is not a list')
+
+      for exam in exam_schedules:
+        try:
+          if not 'id' in exam:
+            raise Exception('exam schedule missing an id')
+          if not isinstance(exam['id'], str):
+            raise Exception('exam schedule id is not a string')
+          if exam['id'] in current_exam_schedules:
+            current_exam_infos.append(exam)
+        except Exception as e:
+          syslog.syslog(syslog.LOG_WARNING,
+                        'error in finding the current exam schedule: %s' % e)
+
+    current_exams_filenames = []
+    decrypt_codes_list = []
+
+    for exam_info in current_exam_infos:
+      try:
+        if not 'file_name' in exam_info:
+          raise Exception('exam schedule is missing file_name field')
+        if not isinstance(exam_info['file_name'], str):
+          raise Exception('exam schedule file_name is not a string')
+        if not 'decrypt_code' in exam_info:
+          raise Exception('exam schedule is missing decrypt_code field')
+        if not isinstance(exam_info['decrypt_code'], str):
+          raise Exception('exam schedule decrypt_code is not a string')
+        current_exams_filenames.append(exam_info['file_name'])
+        decrypt_codes_list.append(exam_info['decrypt_code'])
+      except Exception as e:
+        syslog.syslog(syslog.LOG_WARNING,
+                      'error in looking up exam filename/codes: %s' % e)
+
+    # we should get here even where these is no current package so that
+    # the ongoing exams set gets removed
+    self.zip_exams(current_exams_filenames, decrypt_codes_list)
 
 
   def zip_exams(self, current_exams_filenames, decrypt_codes_list):
