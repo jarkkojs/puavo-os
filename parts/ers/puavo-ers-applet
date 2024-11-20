@@ -1183,8 +1183,7 @@ class PuavoErsExamSorter (threading.Thread):
     self.cleanup_exams(EXAMS_UPCOMING_DIR, upcoming_exams_filenames)
     self.link_exams_to_dir(EXAMS_UPCOMING_DIR, upcoming_exams_filenames)
 
-    self.zip_exams(current_exams_filenames, todays_exams_filenames,
-        decrypt_codes_list)
+    self.zip_exams(current_exams_filenames, decrypt_codes_list)
 
     if fatal_errors:
       raise Exception('there were some problems when sorting exams')
@@ -1236,18 +1235,13 @@ class PuavoErsExamSorter (threading.Thread):
           raise e
 
 
-  def zip_exams(self, current_exams_filenames, todays_exams_filenames,
-                decrypt_codes_list):
+  def zip_exams(self, current_exams_filenames, decrypt_codes_list):
     global current_zip_name
 
     current_zip_name = 'Menossa-%s.zip' % self.current_day
-    todays_zip_name  = 'Kaikki-%s.zip'  % self.current_day
 
     current_exams_filenames.sort()
-    todays_exams_filenames.sort()
-
     current_zip_path = os.path.join(KTP_JAKO_DIR, current_zip_name)
-    todays_zip_path  = os.path.join(KTP_JAKO_DIR, todays_zip_name)
 
     try:
       if not os.path.exists(current_zip_path) \
@@ -1259,18 +1253,13 @@ class PuavoErsExamSorter (threading.Thread):
       syslog.syslog(syslog.LOG_ERR,
         'error when zipping current exams (or updating decrypt codes): %s' % e)
 
-    try:
-      if not os.path.exists(todays_zip_path) \
-        or todays_exams_filenames != self.previous_todays_exams:
-          self.zip_an_exam_set(todays_exams_filenames, todays_zip_path)
-          self.previous_todays_exams = todays_exams_filenames
-    except Exception as e:
-      syslog.syslog(syslog.LOG_ERR, 'error when zipping todays exams: %s' % e)
-
+    # XXX the code cleaning up todays_zip_files can be removed "later", those
+    # XXX are legacy files that are no longer useful (keep cleaning up
+    # XXX current_zip_files though!)
     current_zip_files = glob.glob( os.path.join(KTP_JAKO_DIR, 'Menossa-*.zip') )
     todays_zip_files  = glob.glob( os.path.join(KTP_JAKO_DIR, 'Kaikki-*.zip') )
     for zipfile in (current_zip_files + todays_zip_files):
-      if not zipfile in [ current_zip_path, todays_zip_path ]:
+      if zipfile != current_zip_path:
         rm_f(zipfile)
 
 
