@@ -53,7 +53,7 @@ EXAMS_UPCOMING_DIR = os.path.join(KTP_JAKO_DIR, 'Tulevat')
 PRELOAD_TIMEDELTA = datetime.timedelta(minutes=15)
 
 exam_scheduler_lock = threading.Lock()
-current_exams_set = None
+current_exam_package = None
 current_zip_name = None
 
 
@@ -995,6 +995,44 @@ class PuavoErsExamControl (threading.Thread):
     self.send_status_update_lock.release()
 
 
+class ExamPackage:
+  def __init__(self, package_id, package_info, start_time, end_time):
+    self.id         = package_id
+    self.info       = package_info
+    self.start_time = start_time
+    self.end_time   = end_time
+    self.exams      = {}
+
+
+  def update_exams_from_schedules(self, exam_schedules):
+    if not 'schedules' in self.info:
+      raise Exception('schedules missing from package %s' % self.id)
+    if not isinstance(self.info['schedules'], list):
+      raise Exception('current exam schedules is not a list')
+
+    for exam in exam_schedules:
+      try:
+        if not 'id' in exam:
+          raise Exception('exam schedule missing an id')
+        if not isinstance(exam['id'], str):
+          raise Exception('exam schedule id is not a string')
+        if not 'file_name' in exam:
+          raise Exception('exam schedule is missing file_name field')
+        if not isinstance(exam['file_name'], str):
+          raise Exception('exam schedule file_name is not a string')
+        if not 'decrypt_code' in exam:
+          raise Exception('exam schedule is missing decrypt_code field')
+        if not isinstance(exam['decrypt_code'], str):
+          raise Exception('exam schedule decrypt_code is not a string')
+
+        if exam['id'] in self.info['schedules']:
+          self.exams[ exam['id'] ] = exam
+
+      except Exception as e:
+        syslog.syslog(syslog.LOG_WARNING,
+                      'error in finding the current exam schedule: %s' % e)
+
+
 class PuavoErsExamManager (threading.Thread):
   def __init__(self, is_active):
     threading.Thread.__init__(self)
@@ -1071,8 +1109,6 @@ class PuavoErsExamManager (threading.Thread):
 
 
   def sort_exams_to_dirs(self, exam_schedules):
-    global current_exams_set
-
     syslog.syslog(syslog.LOG_INFO, 'sorting exams in filesystem')
 
     archived_exams_filenames = []
@@ -1167,68 +1203,45 @@ class PuavoErsExamManager (threading.Thread):
 
 
   def setup_ongoing_exam_zip(self, exam_packages, exam_schedules):
+    global current_exam_package
+
     syslog.syslog(syslog.LOG_INFO, 'checking the ongoing exams zip')
 
-    current_package_id = None
-    current_package_info = None
+    new_exam_package = None
 
     if not isinstance(exam_packages, dict):
       raise Exception('exam packages is not a dict')
 
     # XXX we probably need package_id for returns, where should we store it?
     # XXX (probably in a filesystem?)
-    for package_id, package_info in exam_packages.items():
-      package_start_time = iso_to_local_datetime(package_info['start_time'])
-      package_end_time   = iso_to_local_datetime(package_info['end_time'])
-      if (package_start_time - PRELOAD_TIMEDELTA) <= self.current_time \
-        and self.current_time < package_end_time:
-          current_package_id = package_id
-          current_package_info = package_info
+    for pkg_id, pkg_info in exam_packages.items():
+      start_time = iso_to_local_datetime(pkg_info['start_time'])
+      end_time   = iso_to_local_datetime(pkg_info['end_time'])
+      if (start_time - PRELOAD_TIMEDELTA) <= self.current_time \
+        and self.current_time < end_time:
+          new_exam_package = ExamPackage(pkg_id, pkg_info, start_time, end_time)
           break
-
-    current_exam_infos = []
-    if current_package_id:
-      if not 'schedules' in package_info:
-        raise Exception('schedules missing from package %s' \
-                          % current_package_id)
-      current_exam_schedules = package_info['schedules']
-      if not isinstance(current_exam_schedules, list):
-        raise Exception('current exam schedules is not a list')
-
-      for exam in exam_schedules:
-        try:
-          if not 'id' in exam:
-            raise Exception('exam schedule missing an id')
-          if not isinstance(exam['id'], str):
-            raise Exception('exam schedule id is not a string')
-          if exam['id'] in current_exam_schedules:
-            current_exam_infos.append(exam)
-        except Exception as e:
-          syslog.syslog(syslog.LOG_WARNING,
-                        'error in finding the current exam schedule: %s' % e)
 
     current_exams_filenames = []
     decrypt_codes_list = []
 
-    for exam_info in current_exam_infos:
-      try:
-        if not 'file_name' in exam_info:
-          raise Exception('exam schedule is missing file_name field')
-        if not isinstance(exam_info['file_name'], str):
-          raise Exception('exam schedule file_name is not a string')
-        if not 'decrypt_code' in exam_info:
-          raise Exception('exam schedule is missing decrypt_code field')
-        if not isinstance(exam_info['decrypt_code'], str):
-          raise Exception('exam schedule decrypt_code is not a string')
-        current_exams_filenames.append(exam_info['file_name'])
-        decrypt_codes_list.append(exam_info['decrypt_code'])
-      except Exception as e:
-        syslog.syslog(syslog.LOG_WARNING,
-                      'error in looking up exam filename/codes: %s' % e)
+    if new_exam_package:
+      new_exam_package.update_exams_from_schedules(exam_schedules)
+      for exam_info in new_exam_package.exams.values():
+        try:
+          current_exams_filenames.append(exam_info['file_name'])
+          decrypt_codes_list.append(exam_info['decrypt_code'])
+        except Exception as e:
+          syslog.syslog(syslog.LOG_WARNING,
+                        'error in looking up exam filename/codes: %s' % e)
 
-    # we should get here even where these is no current package so that
+    # we should get here even when new_exam_package is empty so that
     # the ongoing exams set gets removed
     self.zip_exams(current_exams_filenames, decrypt_codes_list)
+
+    if new_exam_package and not new_exam_package.exams:
+      new_exam_package = None
+    current_exam_package = new_exam_package
 
 
   def zip_exams(self, current_exams_filenames, decrypt_codes_list):
@@ -1480,7 +1493,7 @@ class PuavoErsExamScheduler (threading.Thread):
 
 
   def run(self):
-    global current_exams_set
+    global current_exam_package
 
     comm_ok = False
     is_enabled = None
@@ -1512,7 +1525,7 @@ class PuavoErsExamScheduler (threading.Thread):
 
         if comm_ok:
           with exam_scheduler_lock:
-            self.schedule_exams(current_exams_set)
+            self.schedule_exams(current_exam_package)
 
       except ExamSchedulerNotActive as e:
         if is_enabled != self.exam_scheduler_enabled:
@@ -1697,7 +1710,7 @@ class PuavoErsExamScheduler (threading.Thread):
                     'could not get monitoring passphrase: %s' % e)
 
 
-  def schedule_exams(self, current_exams_set):
+  def schedule_exams(self, current_exam_package):
     syslog.syslog(syslog.LOG_DEBUG, 'running exam scheduler')
 
     self.handle_keycode_change_request()
@@ -1735,7 +1748,7 @@ class PuavoErsExamScheduler (threading.Thread):
                     'examinations are in progress, not loading any exams')
       return
 
-    if len(current_exams_set.exams) == 0:
+    if not current_exam_package:
       if self.has_started:
         msg = 'exams ongoing but should not be according to schedule,' \
                  + ' resetting server state'
@@ -1746,7 +1759,7 @@ class PuavoErsExamScheduler (threading.Thread):
       return
 
     current_exam_uuids = []
-    for exam in current_exams_set.exams:
+    for exam in current_exam_package.exams.values():
       if not 'file_uuid' in exam:
         errmsg = 'no uuid set for exam "%s", can not check it is on server' \
                    % exam['file_name']
@@ -1757,7 +1770,7 @@ class PuavoErsExamScheduler (threading.Thread):
       if set(currently_loaded_exam_uuids) != set(current_exam_uuids):
         syslog.syslog(syslog.LOG_INFO, 'loading exams')
         self.load_exams()
-        self.finish_time = current_exams_set.latest_end_time
+        self.finish_time = current_exam_package.end_time
         self.has_started = False
     except CurrentZipNotReady as e:
       syslog.syslog(syslog.LOG_INFO,
@@ -1765,7 +1778,7 @@ class PuavoErsExamScheduler (threading.Thread):
       return
 
     if not self.has_started \
-      and current_exams_set.earliest_start_time <= datetime.datetime.now():
+      and current_exam_package.start_time <= datetime.datetime.now():
         syslog.syslog(syslog.LOG_NOTICE, 'starting up exams')
         self.start_loaded_exams()
 
