@@ -50,6 +50,7 @@ EXAMS_DIR          = os.path.join(KTP_JAKO_DIR, '.exams')
 EXAMS_JSON_FILE    = os.path.join(KTP_JAKO_DIR, '.exams.json')
 EXAMS_UPCOMING_DIR = os.path.join(KTP_JAKO_DIR, 'Tulevat')
 
+FORCELOAD_BEFORE_START_TIMEDELTA = datetime.timedelta(minutes=5)
 PRELOAD_TIMEDELTA = datetime.timedelta(minutes=15)
 
 exam_scheduler_lock = threading.Lock()
@@ -1004,6 +1005,10 @@ class ExamPackage:
     self.exams      = {}
 
 
+  def get_exam_uuids(self):
+    return [ exam['file_uuid'] for exam in self.exams.values() ]
+
+
   def update_exams_from_schedules(self, exam_schedules):
     if not 'schedules' in self.info:
       raise Exception('schedules missing from package %s' % self.id)
@@ -1024,6 +1029,10 @@ class ExamPackage:
           raise Exception('exam schedule is missing decrypt_code field')
         if not isinstance(exam['decrypt_code'], str):
           raise Exception('exam schedule decrypt_code is not a string')
+        if not 'file_uuid' in exam:
+          raise Exception('exam schedule is missing file_uuid field')
+        if not isinstance(exam['file_uuid'], str):
+          raise Exception('exam schedule file_uuid is not a string')
 
         if exam['id'] in self.info['schedules']:
           self.exams[ exam['id'] ] = exam
@@ -1657,13 +1666,12 @@ class PuavoErsExamScheduler (threading.Thread):
     return last_finished_time
 
 
-  def update_exams_finished_time(self, status):
-    if self.there_are_still_active_students(status):
-      syslog.syslog(syslog.LOG_INFO, 'there are still active students')
-      self.finish_time = self.end_of_today()
-    else:
-      now = datetime.datetime.now()
+  def update_exams_finished_time(self, status, current_exam_package,
+                                 currently_loaded_exam_uuids):
+    now = datetime.datetime.now()
 
+    if not self.there_are_still_active_students(status):
+      # no active students
       last_finished_time = self.get_last_finished_time(status)
       if last_finished_time:
         if self.finish_time.astimezone() < last_finished_time:
@@ -1672,6 +1680,43 @@ class PuavoErsExamScheduler (threading.Thread):
 
       if self.finish_time > now:
         self.finish_time = now
+      return
+
+    # active students
+
+    syslog.syslog(syslog.LOG_INFO, 'there are still active students')
+    if not current_exam_package:
+      syslog.syslog(syslog.LOG_INFO,
+                    'there are no upcoming exams, we let students continue')
+      self.finish_time = self.end_of_today()
+      return
+
+    # active students with an active exam package
+
+    current_exam_uuids = current_exam_package.get_exam_uuids()
+    if set(current_exam_uuids) == set(currently_loaded_exam_uuids):
+      # the exam package is the same (at least it has the same exams)
+      # XXX should we take out answers and restart the set even when
+      # XXX exams are the same, if the package is different?
+      self.finish_time = self.end_of_today()
+      return
+
+    # active students with a different, upcoming exam package
+
+    forceload_time \
+      = current_exam_package.start_time - FORCELOAD_BEFORE_START_TIMEDELTA
+    self.finish_time = forceload_time
+
+    if forceload_time <= now:
+      minutes_to_forceload_time = 0
+      explanation = 'previous exams will be forcefully finished now'
+    else:
+      minutes_to_forceload_time = int((forceload_time - now).seconds / 60)
+      explanation = 'students will be kicked out from the previous exams'
+
+    syslog.syslog(syslog.LOG_INFO,
+                  'new exams will be loaded in %d minutes, %s' \
+                    % (minutes_to_forceload_time, explanation))
 
 
   def handle_keycode_change_request(self):
@@ -1737,7 +1782,8 @@ class PuavoErsExamScheduler (threading.Thread):
     currently_loaded_exam_uuids \
       = [ exam['examUuid'] for exam in currently_loaded_exams ]
 
-    self.update_exams_finished_time(status)
+    self.update_exams_finished_time(status, current_exam_package,
+                                    currently_loaded_exam_uuids)
 
     exams_finished = self.exams_are_finished()
     if exams_finished:
@@ -1758,13 +1804,7 @@ class PuavoErsExamScheduler (threading.Thread):
         syslog.syslog(syslog.LOG_INFO, 'no exams to schedule')
       return
 
-    current_exam_uuids = []
-    for exam in current_exam_package.exams.values():
-      if not 'file_uuid' in exam:
-        errmsg = 'no uuid set for exam "%s", can not check it is on server' \
-                   % exam['file_name']
-        raise Exception(errmsg)
-      current_exam_uuids.append(exam['file_uuid'])
+    current_exam_uuids = current_exam_package.get_exam_uuids()
 
     try:
       if set(currently_loaded_exam_uuids) != set(current_exam_uuids):
