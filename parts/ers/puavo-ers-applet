@@ -1261,6 +1261,7 @@ class PuavoErsExamManager (threading.Thread):
     current_exams_filenames.sort()
     current_zip_path = os.path.join(KTP_JAKO_DIR, current_zip_name)
 
+    error_in_zipping = None
     try:
       if not os.path.exists(current_zip_path) \
         or current_exams_filenames != self.previous_current_exams:
@@ -1268,7 +1269,7 @@ class PuavoErsExamManager (threading.Thread):
                                decrypt_codes_list)
           self.previous_current_exams = current_exams_filenames
     except Exception as e:
-      syslog.syslog(syslog.LOG_ERR,
+      error_in_zipping = Exception(
         'error when zipping current exams (or updating decrypt codes): %s' % e)
 
     # XXX the code cleaning up todays_zip_files can be removed "later", those
@@ -1279,6 +1280,9 @@ class PuavoErsExamManager (threading.Thread):
     for zipfile in (current_zip_files + todays_zip_files):
       if zipfile != current_zip_path:
         rm_f(zipfile)
+
+    if error_in_zipping:
+      raise error_in_zipping
 
 
   def zip_an_exam_set(self, exams, zip_path, decrypt_codes_list=None):
