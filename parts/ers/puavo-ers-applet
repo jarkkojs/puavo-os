@@ -1393,8 +1393,9 @@ class PuavoErsExamScheduler (threading.Thread):
 
       for decrypt in output['decrypt']:
         if not 'mebs' in decrypt:
-          syslog.syslog(syslog.LOG_ERR,
-                       'exam decrypt missing a list of mebs')
+          errmsg = 'exam decrypt missing a list of mebs, we got: %s' \
+                     % decrypt
+          syslog.syslog(syslog.LOG_ERR, errmsg)
           continue
 
         for exam in decrypt['mebs']:
