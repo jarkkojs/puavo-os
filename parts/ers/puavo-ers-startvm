@@ -2,36 +2,56 @@
 
 set -eu
 
+log() {
+  local priority
+  priority=$1
+  shift
+  logger -p "user.${priority}" -t puavo-ers-startvm "$@"
+}
+
 if [ "$(puavo-conf puavo.xsessions.default)" != 'puavo-ers' ]; then
+  log err 'not starting Abitti VM because puavo-ers-session is not enabled'
   exit 0
 fi
 
-# Run automated vm startup
-if vboxmanage list vms | grep -q 'NaksuAbittiKTP' ; then
-  logger -p user.info -t puavo-ers-startvm \
-    "Trying Automated Abitti vm startup"
-  if vboxmanage startvm NaksuAbittiKTP ; then
-    logger -p user.info -t puavo-ers-startvm \
-      "Abitti vm running"
-    sleep 5
-    logger -p user.info -t puavo-ers-startvm \
-      "Sending first enter key to Abitti vm"
-    if vboxmanage controlvm NaksuAbittiKTP keyboardputscancode 1C 9C ; then
-      sleep 1
-      logger -p user.info -t puavo-ers-startvm \
-        "Sending second enter key to Abitti vm"
-      if vboxmanage controlvm NaksuAbittiKTP keyboardputscancode 1C 9C ; then
-        logger -p user.info -t puavo-ers-startvm \
-          "Abitti vm should now be booting"
-        exit 0
-      fi
-    fi
-  fi
-  logger -p user.err -t puavo-ers-startvm \
-    "Automated Abitti vm startup failed"
-  exit 1
-else
-  logger -p user.err -t puavo-ers-startvm \
-    "Abitti vm not found"
+# Run automated VM startup
+
+if ! vboxmanage list vms | grep -q 'NaksuAbittiKTP'; then
+  log err 'Abitti VM not found'
   exit 1
 fi
+
+for i in 4 8 16 32; do
+  if lsmod | grep -q vboxdrv; then
+    break
+  fi
+  log warning 'waiting for vboxdrv to load in kernel'
+  sleep "$i"
+done
+
+sleep 4
+log info 'trying Automated Abitti VM startup'
+if ! vboxmanage startvm NaksuAbittiKTP; then
+  log err 'failed to start up Abitti VM'
+  exit 1
+fi
+
+log info 'Abitti VM running'
+
+sleep 5
+log info 'sending first enter key to Abitti VM'
+
+if ! vboxmanage controlvm NaksuAbittiKTP keyboardputscancode 1C 9C; then
+  log err 'could not send first ENTER to Abitti VM'
+  exit 1
+fi
+
+sleep 1
+log info 'sending second enter key to Abitti VM'
+if ! vboxmanage controlvm NaksuAbittiKTP keyboardputscancode 1C 9C; then
+  log err 'could not send second ENTER to Abitti VM'
+  exit 1
+fi
+
+log info 'Abitti VM should now be booting up'
+exit 0
