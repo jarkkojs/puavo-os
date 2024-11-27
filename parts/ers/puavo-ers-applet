@@ -426,7 +426,7 @@ class PuavoErsApplet:
     syslog.syslog(syslog.LOG_NOTICE, 'starting up naksu')
 
     cmd = [ '/usr/bin/terminator', '-T', 'naksu terminal',
-            '--working-directory=' + self.PUAVO_ERS_DIR,
+            '--no-dbus', '--working-directory=' + self.PUAVO_ERS_DIR,
             '-x', './naksu', '--self-update=enabled' ]
     (pid, stdin, stdout, stderr) = GLib.spawn_async(cmd,
       flags=GLib.SpawnFlags.DO_NOT_REAP_CHILD|GLib.SpawnFlags.STDERR_TO_DEV_NULL,
