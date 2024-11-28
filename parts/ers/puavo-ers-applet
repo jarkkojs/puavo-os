@@ -1090,7 +1090,7 @@ class PuavoErsExamManager (threading.Thread):
 
         # we do not check with while, because this can be run periodically
         if not self.do_manage_exams:
-          self.manage_exams_lock.wait(timeout=600)
+          self.manage_exams_lock.wait(timeout=180)
 
         if self.exam_manager_enabled:
           with exam_scheduler_lock:
