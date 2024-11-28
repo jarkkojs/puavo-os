@@ -1699,7 +1699,20 @@ class PuavoErsExamScheduler (threading.Thread):
     return last_finished_time
 
 
-  def update_exams_finished_time(self, status, current_exam_package,
+  def running_the_expected_exams(self, session_state, current_exam_package,
+                                 currently_loaded_exam_uuids):
+    if session_state:
+      return current_exam_package.id == session_state['package']['id']
+
+    # we should have had session state for this but in case something funky
+    # has happened we can also compare the running exam set (this funky might
+    # be that someone is loading exams by hand)
+    current_exam_uuids = current_exam_package.get_exam_uuids()
+    return set(current_exam_uuids) == set(currently_loaded_exam_uuids)
+
+
+  def update_exams_finished_time(self, status, session_state,
+                                 current_exam_package,
                                  currently_loaded_exam_uuids):
     now = datetime.datetime.now()
 
@@ -1726,11 +1739,9 @@ class PuavoErsExamScheduler (threading.Thread):
 
     # active students with an active exam package
 
-    current_exam_uuids = current_exam_package.get_exam_uuids()
-    if set(current_exam_uuids) == set(currently_loaded_exam_uuids):
-      # the exam package is the same (at least it has the same exams)
-      # XXX should we take out answers and restart the set even when
-      # XXX exams are the same, if the package is different?
+    if self.running_the_expected_exams(session_state, current_exam_package,
+                                       currently_loaded_exam_uuids):
+      # if running the expected exams we have time until the end of the day
       self.finish_time = self.end_of_today()
       return
 
@@ -1788,13 +1799,7 @@ class PuavoErsExamScheduler (threading.Thread):
                     'could not get monitoring passphrase: %s' % e)
 
 
-  def update_status_to_control(self, status):
-    session_state = None
-    try:
-      session_state = self.load_session_state()
-    except Exception as e:
-      pass
-
+  def update_status_to_control(self, status, session_state):
     self.exam_control.update_status(status,
                                     session_state,
                                     self.monitoring_passphrase,
@@ -1815,8 +1820,10 @@ class PuavoErsExamScheduler (threading.Thread):
 
     self.log_status(status)
 
+    session_state = self.load_session_state_none_if_no_session()
+
     self.update_monitoring_passphrase()
-    self.update_status_to_control(status)
+    self.update_status_to_control(status, session_state)
 
     if not self.exam_scheduler_enabled:
       raise ExamSchedulerNotActive
@@ -1826,7 +1833,7 @@ class PuavoErsExamScheduler (threading.Thread):
     currently_loaded_exam_uuids \
       = [ exam['examUuid'] for exam in currently_loaded_exams ]
 
-    self.update_exams_finished_time(status, current_exam_package,
+    self.update_exams_finished_time(status, session_state, current_exam_package,
                                     currently_loaded_exam_uuids)
 
     exams_finished = self.exams_are_finished()
@@ -1849,10 +1856,10 @@ class PuavoErsExamScheduler (threading.Thread):
         syslog.syslog(syslog.LOG_INFO, 'no exams to schedule')
       return
 
-    current_exam_uuids = current_exam_package.get_exam_uuids()
-
     try:
-      if set(currently_loaded_exam_uuids) != set(current_exam_uuids):
+      need_reload = not self.running_the_expected_exams(session_state,
+                      current_exam_package, currently_loaded_exam_uuids)
+      if need_reload:
         syslog.syslog(syslog.LOG_INFO, 'loading exams')
         self.load_exams()
         self.finish_time = current_exam_package.end_time
@@ -1877,7 +1884,19 @@ class PuavoErsExamScheduler (threading.Thread):
 
 
   def load_session_state(self):
-    return load_from_json(self.SESSION_STATE_PATH)
+    state = load_from_json(self.SESSION_STATE_PATH)
+    if not ('package' in state and 'id' in state['package']):
+      raise Exception('package id is missing from session state')
+    return state
+
+
+  def load_session_state_none_if_no_session(self):
+    state = None
+    try:
+      state = self.load_session_state()
+    except Exception as e:
+      pass
+    return state
 
 
   def save_session_state(self, exam_package):
