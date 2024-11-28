@@ -6,6 +6,7 @@ import copy
 import datetime
 import errno
 import fcntl
+import filecmp
 import gettext
 import gi
 import glob
@@ -102,11 +103,23 @@ def load_from_json(path):
 
 
 def save_as_json(path, data):
+  # return True  when json on file has changed
+  # return False when there was nothing to do
+  # raise Exception when an error occurs
   tmpfile = '%s.tmp' % path
   with open(tmpfile, 'w') as f:
     json.dump(data, f)
     f.write("\n")
+  try:
+    if filecmp.cmp(tmpfile, path, False):
+      rm_f(tmpfile, False)
+      return False
+  except Exception as e:
+    if e.errno != errno.ENOENT:
+      raise e
+
   os.rename(tmpfile, path)
+  return True
 
 
 def timestring_with_strftime(timestring, format_string):
@@ -303,7 +316,8 @@ class PuavoExamServer (threading.Thread):
                               timeout=20)
       if response.status_code != requests.codes.ok:
         syslog.syslog(syslog.LOG_ERR,
-          'error on GET request to %s: code=%s' % (uri, response.status_code))
+          'error on GET request to %s: received status code %s' \
+             % (uri, response.status_code))
     except Exception as e:
       syslog.syslog(syslog.LOG_ERR,
                     'error on GET request to %s: %s' % (uri, e))
@@ -333,7 +347,8 @@ class PuavoExamServer (threading.Thread):
                               timeout=20)
       if response.status_code != requests.codes.ok:
         syslog.syslog(syslog.LOG_ERR,
-          'error on POST request to %s: code=%s' % (uri, response.status_code))
+          'error on POST request to %s: received status code %s' \
+            % (uri, response.status_code))
     except Exception as e:
       syslog.syslog(syslog.LOG_ERR,
                     'error on POST request to %s: %s' % (uri, e))
@@ -990,13 +1005,14 @@ class PuavoErsExamControl (threading.Thread):
       raise Exception('could not send status update to server')
 
 
-  def update_status(self, new_abitti_status, monitoring_passphrase,
-                    server_version):
+  def update_status(self, session_state, new_abitti_status,
+                    monitoring_passphrase, server_version):
     self.send_status_update_lock.acquire()
 
     self.status = {
       'monitoring_passphrase': monitoring_passphrase,
       'server_version':        server_version,
+      'session':               session_state,
       'status':                new_abitti_status,
     }
 
@@ -1487,10 +1503,6 @@ class PuavoErsExamScheduler (threading.Thread):
   def load_exams(self):
     global current_zip_name
 
-    # XXX this should probably store the package id of the load exams
-    # XXX ... that should be read when answers are returned and returned
-    # XXX ... along with the package id and answers
-
     if current_zip_name == None:
       raise CurrentZipNotReady
 
@@ -1776,6 +1788,19 @@ class PuavoErsExamScheduler (threading.Thread):
                     'could not get monitoring passphrase: %s' % e)
 
 
+  def update_status_to_control(self, status):
+    session_state = None
+    try:
+      session_state = self.load_session_state()
+    except Exception as e:
+      pass
+
+    self.exam_control.update_status(status,
+                                    session_state,
+                                    self.monitoring_passphrase,
+                                    self.server_version)
+
+
   def schedule_exams(self, current_exam_package):
     syslog.syslog(syslog.LOG_DEBUG, 'running exam scheduler')
 
@@ -1791,9 +1816,7 @@ class PuavoErsExamScheduler (threading.Thread):
     self.log_status(status)
 
     self.update_monitoring_passphrase()
-    self.exam_control.update_status(status,
-                                    self.monitoring_passphrase,
-                                    self.server_version)
+    self.update_status_to_control(status)
 
     if not self.exam_scheduler_enabled:
       raise ExamSchedulerNotActive
@@ -1816,6 +1839,7 @@ class PuavoErsExamScheduler (threading.Thread):
       return
 
     if not current_exam_package:
+      self.save_session_state(None)
       if self.has_started:
         msg = 'exams ongoing but should not be according to schedule,' \
                  + ' resetting server state'
@@ -1831,13 +1855,14 @@ class PuavoErsExamScheduler (threading.Thread):
       if set(currently_loaded_exam_uuids) != set(current_exam_uuids):
         syslog.syslog(syslog.LOG_INFO, 'loading exams')
         self.load_exams()
-        self.save_session_state(current_exam_package)
         self.finish_time = current_exam_package.end_time
         self.has_started = False
     except CurrentZipNotReady as e:
       syslog.syslog(syslog.LOG_INFO,
                     'exam scheduler is waiting for zip file to be ready')
       return
+
+    self.save_session_state(current_exam_package)
 
     if not self.has_started \
       and current_exam_package.start_time <= datetime.datetime.now():
@@ -1856,18 +1881,22 @@ class PuavoErsExamScheduler (threading.Thread):
 
 
   def save_session_state(self, exam_package):
-    msg = 'loaded exam to virtual server, saving exam package information'
-    syslog.syslog(syslog.LOG_INFO, msg)
-    exam_filenames = [
-      exam['file_name'] for exam in exam_package.exams.values()
-    ]
-    exams_information = 'exam package id=%s contains exams: %s' \
-                          % (exam_package.id, ' '.join(exam_filenames))
-    syslog.syslog(syslog.LOG_INFO, exams_information)
+    if exam_package:
+      exam_filenames = [
+        exam['file_name'] for exam in exam_package.exams.values()
+      ]
+      exams_information = 'exam package id %s contains exams: %s' \
+                            % (exam_package.id, ' '.join(exam_filenames))
+      logmsg = 'saved session state, %s' % exams_information
+      package_id = exam_package.id
+    else:
+      logmsg = 'saved session state, nulling package information'
+      package_id = None
 
     try:
-      data = { 'package': { 'id': exam_package.id } }
-      save_as_json(self.SESSION_STATE_PATH, data)
+      data = { 'package': { 'id': package_id } }
+      if save_as_json(self.SESSION_STATE_PATH, data):
+        syslog.syslog(syslog.LOG_INFO, logmsg)
     except Exception as e:
       syslog.syslog(syslog.LOG_ERR, 'could not save session state: %s' % e)
 
