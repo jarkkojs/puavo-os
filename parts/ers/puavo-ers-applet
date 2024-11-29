@@ -464,7 +464,7 @@ class PuavoErsApplet:
     if self.automation_active and self.exam_sync_active:
       self.enable_exam_scheduler()
       # Try to start vm
-      subprocess.run("puavo-ers-startvm")
+      subprocess.run('puavo-ers-startvm')
 
     Gtk.main()
 
@@ -1348,6 +1348,58 @@ class PuavoErsExamManager (threading.Thread):
     os.rename(tmpfile, DECRYPT_CODES_PATH)
 
 
+class VirtualBoxControl:
+  def get_link_state():
+    is_up = None
+
+    try:
+      cmd = [ 'vboxmanage', 'showvminfo', 'NaksuAbittiKTP',
+                            '--machinereadable' ]
+      output = subprocess.check_output(cmd).decode('utf-8')
+      for line in output.splitlines():
+        match_result = re.match('^cableconnected1="(on|off)"$', line)
+        if match_result:
+          is_up = (match_result[1] == 'on')
+          break
+    except Exception as e:
+      errmsg = 'could not query VirtualBox host link state: %s' % e
+      syslog.syslog(syslog.LOG_WARNING, errmsg)
+
+    return is_up
+
+
+  def ensure_virtualbox_link_up(is_requested_up):
+    try:
+      is_current_link_up = __class__.get_link_state()
+      if is_current_link_up != None:
+        if is_current_link_up == is_requested_up:
+          # requested state matches link state, doing nothing
+          return
+
+      if is_requested_up:
+        state = 'on'
+      else:
+        state = 'off'
+
+      cmd = [ 'vboxmanage', 'controlvm', 'NaksuAbittiKTP', 'setlinkstate1',
+              state ]
+      subprocess.run(cmd)
+      msg = 'set VirtualBox link state to %s' % state
+      syslog.syslog(syslog.LOG_NOTICE, msg)
+
+    except Exception as e:
+      errmsg = 'error in setting VirtualBox link state to %s' % state
+      syslog.syslog(syslog.LOG_WARNING, errmsg)
+
+
+  def link_up():
+    __class__.ensure_virtualbox_link_up(True)
+
+
+  def link_down():
+    __class__.ensure_virtualbox_link_up(False)
+
+
 class PuavoErsExamScheduler (threading.Thread):
   CMD_IN_PROGRESS_PATH = os.path.join(COMM_DIR, '.cmd-in-progress')
   CMD_PATH             = os.path.join(COMM_DIR, 'cmd')
@@ -1817,6 +1869,8 @@ class PuavoErsExamScheduler (threading.Thread):
       raise Exception('%s (maybe the server is not yet ready?)' % e)
 
     self.has_started = (status['hasStarted'] == True)
+    if self.has_started:
+      VirtualBoxControl.link_up()
 
     self.log_status(status)
 
@@ -1826,6 +1880,7 @@ class PuavoErsExamScheduler (threading.Thread):
     self.update_status_to_control(status, session_state)
 
     if not self.exam_scheduler_enabled:
+      VirtualBoxControl.link_up()
       raise ExamSchedulerNotActive
 
     exams_response = self.get_exams()
@@ -1847,6 +1902,7 @@ class PuavoErsExamScheduler (threading.Thread):
 
     if not current_exam_package:
       self.save_session_state(None)
+      VirtualBoxControl.link_down()
       if self.has_started:
         msg = 'exams ongoing but should not be according to schedule,' \
                  + ' resetting server state'
@@ -1861,6 +1917,7 @@ class PuavoErsExamScheduler (threading.Thread):
                       current_exam_package, currently_loaded_exam_uuids)
       if need_reload:
         syslog.syslog(syslog.LOG_INFO, 'loading exams')
+        VirtualBoxControl.link_down()
         self.load_exams()
         self.finish_time = current_exam_package.end_time
         self.has_started = False
@@ -1873,6 +1930,7 @@ class PuavoErsExamScheduler (threading.Thread):
 
     if not self.has_started \
       and current_exam_package.start_time <= datetime.datetime.now():
+        VirtualBoxControl.link_up()
         syslog.syslog(syslog.LOG_NOTICE, 'starting up exams')
         self.start_loaded_exams()
 
