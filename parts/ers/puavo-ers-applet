@@ -387,11 +387,13 @@ class PuavoErsApplet:
     self.menu.show_all()
 
     self.exam_server = PuavoExamServer()
+    self.answer_return = PuavoErsAnswerReturn(self.exam_server)
     self.exam_manager = PuavoErsExamManager(self.exam_sync_active)
     self.exam_sync = PuavoErsExamSync(self.exam_server, self.exam_manager,
                                       self.exam_sync_active)
     self.exam_control = PuavoErsExamControl(self.exam_server)
-    self.exam_scheduler = PuavoErsExamScheduler(self.exam_control)
+    self.exam_scheduler = PuavoErsExamScheduler(self.exam_control,
+                                                self.answer_return)
 
     self.exam_server.add_other_threads(self.exam_scheduler, self.exam_sync)
 
@@ -1415,9 +1417,10 @@ class PuavoErsExamScheduler (threading.Thread):
   SESSION_STATE_PATH = os.path.join(PUAVO_ERS_DIR, 'session.json')
 
 
-  def __init__(self, exam_control):
+  def __init__(self, exam_control, answer_return):
     threading.Thread.__init__(self)
 
+    self.answer_return             = answer_return
     self.answers_stored_time       = None
     self.do_keycode_change_request = False
     self.exam_control              = exam_control
@@ -1634,7 +1637,7 @@ class PuavoErsExamScheduler (threading.Thread):
       time.sleep(3)
 
 
-  def maybe_store_answers(self, currently_loaded_exams, status):
+  def maybe_store_answers(self, currently_loaded_exams, status, session_state):
     if len(currently_loaded_exams) == 0:
       return
 
@@ -1655,7 +1658,7 @@ class PuavoErsExamScheduler (threading.Thread):
       syslog.syslog(syslog.LOG_INFO,
                     'logging status as we are taking out the answers')
       self.log_status_with_students(status)
-      self.store_answers(currently_loaded_exams)
+      self.store_answers(currently_loaded_exams, session_state)
     else:
       # Trying to store answers when there are none returns an error.
       # Perhaps this logic could be such that it is left for abitti-ktpapi
@@ -1665,7 +1668,7 @@ class PuavoErsExamScheduler (threading.Thread):
     self.answers_stored_time = now
 
 
-  def store_answers(self, currently_loaded_exams):
+  def store_answers(self, currently_loaded_exams, session_state):
     now_as_string = datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
 
     if len(currently_loaded_exams) == 1:
@@ -1678,6 +1681,7 @@ class PuavoErsExamScheduler (threading.Thread):
 
     answers_filename_fp = os.path.join(ANSWERS_DIR, answers_filename)
     self.store_exam_results(answers_filename_fp)
+    self.answer_return.handle_new_answer_set(answers_filename, session_state)
 
 
   def exams_are_finished(self):
@@ -1893,7 +1897,7 @@ class PuavoErsExamScheduler (threading.Thread):
 
     exams_finished = self.exams_are_finished()
     if exams_finished:
-      self.maybe_store_answers(currently_loaded_exams, status)
+      self.maybe_store_answers(currently_loaded_exams, status, session_state)
 
     if self.has_started and not exams_finished:
       syslog.syslog(syslog.LOG_INFO,
@@ -2037,6 +2041,127 @@ class PuavoErsExamScheduler (threading.Thread):
       rm_f(self.CMD_IN_PROGRESS_PATH, False)
 
     raise Exception('timeout when reading server response')
+
+
+class PuavoErsAnswerReturn (threading.Thread):
+  ANSWERS_STATE_PATH = os.path.join(PUAVO_ERS_DIR, 'answers.json')
+
+  def __init__(self, exam_server):
+    threading.Thread.__init__(self)
+
+    self.exam_server = exam_server
+    self.do_answer_return = False
+    self.answer_return_lock = threading.Condition()
+    self.answer_state_lock = threading.Lock()
+
+
+  def run(self):
+    while True:
+      try:
+        syslog.syslog(syslog.LOG_DEBUG, 'in PuavoErsAnswerReturn run() loop')
+
+        self.answer_return_lock.acquire()
+        # we do not check with while, because periodically answer_return()
+        # should be run, as clock ticks forward
+        if not self.self.do_answer_return:
+          self.answer_return_lock.wait(timeout=600)
+        self.do_answer_return = False
+        self.answer_return_lock.release()
+        self.return_answers()
+      except Exception as e:
+        syslog.syslog(syslog.LOG_ERR, 'error when returning answers: %s' % e)
+
+      time.sleep(60)
+
+
+  def handle_new_answer_set(self, answers_filename, session_state):
+    if ('package' in session_state and 'id' in session_state['package'] \
+          and type(session_state['package']['id']) == str):
+      package_id = session_state['package']['id']
+      self.update_latest_on_answers_state(package_id, answers_filename)
+    else:
+      syslog.syslog(syslog.LOG_ERR,
+                    'no package id known for the latest answer set')
+
+    self.answer_return_lock.acquire()
+    self.do_answer_return = True
+    self.answer_return_lock.notify()
+    self.answer_return_lock.release()
+
+
+  def load_answers_state(self):
+    state = {}
+
+    try:
+      with self.answer_state_lock:
+        state = load_from_json(ANSWERS_STATE_PATH)
+        if type(state) != dict:
+          raise Exception('answers state is not dict')
+    except Exception as e:
+      if e.errno != errno.ENOENT:
+        syslog.syslog(syslog.LOG_WARNING,
+                      'could not read answers state: %s' % e)
+
+    return state
+
+
+  def return_answers(self):
+    answer_files_fp = glob.glob( os.path.join(ANSWERS_DIR, 'exam_*.meb') )
+    answer_files = [ os.path.basename(p) for p in answer_files_fp ]
+    answers_state = self.load_answers_state()
+
+    for af_name in answer_files:
+      if not af_name in answers_state:
+        answers_state[af_name] = { 'id': None, 'sent': None }
+
+    for filename in answers_state.keys():
+      answers_info = answers_state[filename]
+      if not answers_info['id'] or type(answers_info['id']) != str:
+        answers_state[filename]['id'] = None
+      if not 'sent' in answers_info:
+        answers_state[filename]['sent'] = None
+      if not answers_info['sent']:
+        try:
+          self.return_one_answer_package(answers_info['id'], filename)
+          answers_state[filename]['sent'] \
+            = datetime.datetime.now().replace(microsecond=0).astimezone() \
+                      .isoformat()
+          self.save_answers_state(answers_state)
+          syslog.syslog(syslog.LOG_NOTICE, 'sent %s to exam-o-matic' % filename)
+        except Exception as e:
+          msg = 'failed to send answers %s (%s)' % (filename, answers_info)
+          syslog.syslog(syslog.LOG_ERR, '%s: %s' % (msg, e))
+
+
+  def return_one_answer_package(self, package_id, answers_filename):
+    answer_filename_path = os.path.join(ANSWERS_DIR, answers_filename)
+    with open(answer_filename_path, 'rb') as f:
+      answer_package = f.read()
+
+    answers_encoded = base64.b64encode(answer_package).decode('utf-8')
+    data = {
+      'contents':   answers_encoded,
+      'filename':   answers_filename,
+      'package_id': package_id,
+    }
+
+    response = self.exam_server.post('/v1/answers/upload', data)
+    if not response or response.status_code != requests.codes.ok:
+      raise Exception('sending answer package to exam-o-matic failed')
+
+
+  def save_answers_state(self, answers_state):
+    with self.answer_state_lock:
+      save_as_json(ANSWERS_STATE_PATH, answers_state)
+
+
+  def update_latest_on_answers_state(self, package_id, answers_filename):
+    state = self.load_answers_state()
+    state[answers_filename] = { 'id': package_id, 'sent': None }
+    self.save_answers_state(state)
+    msg = 'recorded new answer file %s is for package id %s' \
+            % (answers_filename, package_id)
+    syslog.syslog(syslog.LOG_INFO, msg)
 
 
 syslog.openlog('puavo-ers-applet')
