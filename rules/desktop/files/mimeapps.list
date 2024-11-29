@@ -342,6 +342,7 @@ x-scheme-handler/https=firefox.desktop
 x-scheme-handler/icy=org.gnome.Totem.desktop
 x-scheme-handler/icyx=org.gnome.Totem.desktop
 x-scheme-handler/info=yelp.desktop
+x-scheme-handler/m3d=m3d.desktop
 x-scheme-handler/mailto=evolution.desktop
 x-scheme-handler/man=yelp.desktop
 x-scheme-handler/mmsh=org.gnome.Totem.desktop
