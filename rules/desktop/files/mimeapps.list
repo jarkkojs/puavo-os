@@ -158,6 +158,7 @@ x-content/video-svcd=vlc.desktop
 x-content/video-vcd=vlc.desktop
 x-scheme-handler/icy=vlc.desktop
 x-scheme-handler/icyx=vlc.desktop
+x-scheme-handler/m3d=m3d.desktop
 x-scheme-handler/mmsh=vlc.desktop
 x-scheme-handler/mms=vlc.desktop
 x-scheme-handler/rtmp=vlc.desktop
