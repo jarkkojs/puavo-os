@@ -55,9 +55,9 @@ class PuavoExamModeSetupApplet:
   def register_to_exam_service(self):
     try:
       username = getpass.getuser()
-      if not 'KRB5CCNAME' in os.environ:
-        raise Exception('KRB5CCNAME environment variable is not set')
-      krb5ccname_env = os.environ['KRB5CCNAME']
+      krb5ccname_env = ''
+      if 'KRB5CCNAME' in os.environ:
+        krb5ccname_env = os.environ['KRB5CCNAME']
       if not 'LANG' in os.environ:
         raise Exception('LANG environment variable is not set')
       lang_locale = os.environ['LANG']
