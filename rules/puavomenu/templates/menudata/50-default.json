@@ -1098,15 +1098,6 @@
         "org.shotcut.Shotcut": {
             "tags": "default"
         },
-        "org.stellarium.Stellarium": {
-            "name": {
-                "fi": "Stellarium-planetaario",
-                "en": "Stellarium-planetarium",
-                "sv": "Stellarium-planetarium",
-                "de": "Stellarium-Planetarium"
-            },
-            "tags": "default, education, science"
-        },
         "otava-opiskelija": {
             "type": "web",
             "url": "https://opiskelija.otava.fi/",
@@ -1434,6 +1425,19 @@
         },
         "steam": {
             "tags": "steam"
+        },
+        "stellarium-web": {
+            "type": "web",
+            "url": "https://stellarium-web.org/",
+            "name": "Stellarium",
+            "description": {
+                "fi": "Stellarium Web-planetaario",
+                "en": "Stellarium Web-planetarium",
+                "sv": "Stellarium Web-planetarium",
+                "de": "Stellarium Web-Planetarium"
+            },
+            "icon": "/usr/share/icons/Papirus/64x64/apps/stellarium.svg",
+            "tags": "default, education, science"
         },
         "structorizer": {
             "tags": "default"
@@ -1973,7 +1977,7 @@
                 "org.kde.khangman",
                 "org.kde.ktouch",
                 "celestia",
-                "org.stellarium.Stellarium",
+                "stellarium-web",
                 "org.kde.kstars",
                 "org.kde.step",
                 "tracker",
