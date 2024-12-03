@@ -9,7 +9,7 @@ INSTALL_PROGRAM = $(INSTALL)
 INSTALL_DATA = $(INSTALL) -m 644
 
 .PHONY: all
-all: po/fi/puavo-exammode.mo
+all: po/de/puavo-exammode.mo po/fi/puavo-exammode.mo po/sv/puavo-exammode.mo
 
 po/puavo-exammode.pot: extension.js
 	xgettext --omit-header --language Javascript --keyword=_ -o $@ $^
@@ -22,19 +22,25 @@ po/puavo-exammode.pot: extension.js
 	msgfmt $< --output-file $@
 
 .PHONY: i18nupdate
-i18nupdate: po/puavo-exammode.pot po/fi/puavo-exammode.po
+i18nupdate: po/puavo-exammode.pot po/de/puavo-exammode.po po/fi/puavo-exammode.po po/sv/puavo-exammode.po
 
 .PHONY: installdirs
 installdirs:
 	mkdir -p $(DESTDIR)$(datarootdir)/gnome-shell/extensions/puavo-exammode@puavo.org
+	mkdir -p $(DESTDIR)$(datarootdir)/locale/de/LC_MESSAGES
 	mkdir -p $(DESTDIR)$(datarootdir)/locale/fi/LC_MESSAGES
+	mkdir -p $(DESTDIR)$(datarootdir)/locale/sv/LC_MESSAGES
 
 .PHONY: install
 install: installdirs
 	$(INSTALL_DATA) -t $(DESTDIR)$(datarootdir)/gnome-shell/extensions/puavo-exammode@puavo.org \
 	    extension.js metadata.json
+	$(INSTALL_DATA) -t $(DESTDIR)$(datarootdir)/locale/de/LC_MESSAGES \
+		po/de/puavo-exammode.mo
 	$(INSTALL_DATA) -t $(DESTDIR)$(datarootdir)/locale/fi/LC_MESSAGES \
 		po/fi/puavo-exammode.mo
+	$(INSTALL_DATA) -t $(DESTDIR)$(datarootdir)/locale/sv/LC_MESSAGES \
+		po/sv/puavo-exammode.mo
 
 .PHONY: clean
 clean:
