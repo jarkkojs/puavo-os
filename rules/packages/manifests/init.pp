@@ -561,7 +561,6 @@ class packages {
     , 'openbabel'
     , 'pspp'
     , 'qgis'
-    , 'stellarium'
     , 'step'
     , 'texlive-fonts-recommended'
     , 'texlive-latex-extra'
