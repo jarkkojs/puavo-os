@@ -803,6 +803,7 @@ class packages {
     , 'p7zip-full'
     , 'pass'
     , 'password-gorilla'
+    , 'pdfarranger'
     , 'system-config-printer'
     , 'tlp'
     , 'ubertooth'
