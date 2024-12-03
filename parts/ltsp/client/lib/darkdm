@@ -572,33 +572,37 @@ darkdm_poweroff()
   poweroff
 }
 
+list_available_keyboard_layouts() {
+  awk '
+    /^! layout$/,/custom/ {
+      if ($1 == "!" || $1 == "custom") { next }
+      print $1
+    }' /usr/share/X11/xkb/rules/base.lst \
+    | sort
+}
+
 darkdm_kbd() {
+  local new_layout possible_layouts
   new_layout=$1
 
-  current_layout=$(localectl status \
-                     | awk '/X11 Layout:/ { split($3, a, ","); print a[1] }')
-
   if [ -z "$new_layout" ]; then
-    possible_layouts="$(localectl list-x11-keymap-layouts | xargs \
+    possible_layouts="$(list_available_keyboard_layouts \
                           | fmt -w 70 | sed 's/^/  /')"
 
     cat <<EOF
-Current keyboard layout is: $current_layout
-Choose from layouts:
-$possible_layouts
+Choose from available layouts:
+${possible_layouts}
 EOF
     read -p 'Choose keyboard layout: ' new_layout
   fi
 
   if [ -z "$new_layout" ]; then
     echo 'Not changing keyboard layout'
-  elif localectl set-keymap "$new_layout"; then
+  elif ckbcomp "$new_layout" 2>/dev/null | loadkeys -; then
     echo "Changed keyboard layout to \"${new_layout}\""
   else
     echo "Could not change keyboard layout" >&2
   fi
-
-  setupcon
 
   sleep 0.5
   echo
