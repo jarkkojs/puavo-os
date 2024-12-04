@@ -214,15 +214,15 @@ class PuavoExamServer (threading.Thread):
 
   def handle_message(self, msgjson):
     msg = json.loads(msgjson)
-    if type(msg) != dict:
+    if not isinstance(msg, dict):
       raise Exception('message is not a dict')
     if not 'type' in msg:
       raise Exception('message does not have a type')
-    if type(msg['type']) != str:
+    if not isinstance(msg['type'], str):
       raise Exception('message type is not a string')
     if not 'id' in msg:
       raise Exception('message does not have a id')
-    if type(msg['id']) != int:
+    if not isinstance(msg['id'], int):
       raise Exception('message id is not a integer')
 
     if msg['type'] == 'pong':
@@ -1128,11 +1128,11 @@ class PuavoErsExamManager (threading.Thread):
       exams_information = load_from_json(EXAMS_JSON_FILE)
       if not 'packages' in exams_information:
         raise Exception('packages field is missing')
-      if type(exams_information['packages']) != dict:
+      if not isinstance(exams_information['packages'], dict):
         raise Exception('packages is not a dict')
       if not 'schedules' in exams_information:
         raise Exception('schedules field is missing')
-      if type(exams_information['schedules']) != list:
+      if not isinstance(exams_information['schedules'], list):
         raise Exception('schedules is not a list')
 
     except OSError as e:
@@ -1865,11 +1865,11 @@ class PuavoErsExamScheduler (threading.Thread):
       answer = self.get_passphrase()
       if not 'get-passphrase' in answer:
         raise Exception('no get-passphrase key')
-      if type(answer['get-passphrase']) != dict:
+      if not isinstance(answer['get-passphrase'], dict):
         raise Exception('get-passphrase value is not a dict')
       if not 'passphrase' in answer['get-passphrase']:
         raise Exception('no passphrase key')
-      if type(answer['get-passphrase']['passphrase']) != str:
+      if not isinstance((answer['get-passphrase']['passphrase']), str):
         raise Exception('passphrase key is not a string')
       self.monitoring_passphrase = answer['get-passphrase']['passphrase']
       syslog.syslog(syslog.LOG_INFO,
@@ -2100,7 +2100,7 @@ class PuavoErsAnswerReturn (threading.Thread):
 
   def handle_new_answer_set(self, answers_filename, session_state):
     if ('package' in session_state and 'id' in session_state['package'] \
-          and type(session_state['package']['id']) == str):
+          and isinstance(session_state['package']['id']), str):
       package_id = session_state['package']['id']
       self.update_latest_on_answers_state(package_id, answers_filename)
     else:
@@ -2119,7 +2119,7 @@ class PuavoErsAnswerReturn (threading.Thread):
     try:
       with self.answer_state_lock:
         state = load_from_json(ANSWERS_STATE_PATH)
-        if type(state) != dict:
+        if not isinstance(state, dict):
           raise Exception('answers state is not dict')
     except Exception as e:
       if e.errno != errno.ENOENT:
@@ -2140,7 +2140,7 @@ class PuavoErsAnswerReturn (threading.Thread):
 
     for filename in answers_state.keys():
       answers_info = answers_state[filename]
-      if not answers_info['id'] or type(answers_info['id']) != str:
+      if not ('id' in answers_info and isinstance(answers_info['id'], str)):
         answers_state[filename]['id'] = None
       if not 'sent' in answers_info:
         answers_state[filename]['sent'] = None
