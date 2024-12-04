@@ -522,14 +522,15 @@ class PuavoErsApplet:
     try:
       error_no_exams = False
       try:
-        exams_information = load_from_json(EXAMS_JSON_FILE)
-        if not 'schedules' in exams_information:
-          raise Exception('schedules field is missing')
+        exams_information = self.exam_manager.get_exams_information()
+        if not exams_information:
+          raise Exception('no exams information stored')
         new_exams = exams_information['schedules']
       except Exception as e:
         error_no_exams = True
         new_exams = []
-        syslog.syslog(syslog.LOG_ERR, 'could not parse exams json: %s' % e)
+        syslog.syslog(syslog.LOG_WARNING,
+                      'could not get exams from exam manager: %s' % e)
 
       if (force_update or self.old_exams != new_exams):
         self.update_decrypt_codes_in_ui(new_exams, error_no_exams)
@@ -1038,6 +1039,11 @@ class ExamPackage:
     return [ exam['file_uuid'] for exam in self.exams.values() ]
 
 
+  def has_a_duplicate_field(self, exams, exam_candidate, field):
+    already_recorded_values = [ e[field] for e in exams.values() ]
+    return exam_candidate[field] in already_recorded_values
+
+
   def update_exams_from_schedules(self, exam_schedules):
     if not 'schedules' in self.info:
       raise Exception('schedules missing from package %s' % self.id)
@@ -1064,7 +1070,16 @@ class ExamPackage:
           raise Exception('exam schedule file_uuid is not a string')
 
         if exam['id'] in self.info['schedules']:
-          self.exams[ exam['id'] ] = exam
+          include_exam = True
+          for field in [ 'file_name', 'file_uuid' ]:
+            if self.has_a_duplicate_field(self.exams, exam, field):
+              errmsg = ('an exam schedule has a duplicate field %s,' \
+                          + ' ignoring schedule %s') % (field, exam['id'])
+              syslog.syslog(syslog.LOG_ERR, errmsg)
+              include_exam = False
+
+          if include_exam:
+            self.exams[ exam['id'] ] = exam
 
       except Exception as e:
         syslog.syslog(syslog.LOG_WARNING,
@@ -1108,6 +1123,26 @@ class PuavoErsExamManager (threading.Thread):
       time.sleep(10)
 
 
+  def get_exams_information(self):
+    try:
+      exams_information = load_from_json(EXAMS_JSON_FILE)
+      if not 'packages' in exams_information:
+        raise Exception('packages field is missing')
+      if type(exams_information['packages']) != dict:
+        raise Exception('packages is not a dict')
+      if not 'schedules' in exams_information:
+        raise Exception('schedules field is missing')
+      if type(exams_information['schedules']) != list:
+        raise Exception('schedules is not a list')
+
+    except OSError as e:
+      if e.errno != errno.ENOENT:
+        raise e
+      return None
+
+    return exams_information
+
+
   def trigger_manage_exams(self):
     syslog.syslog(syslog.LOG_DEBUG, 'manage exams triggered')
     self.manage_exams_lock.acquire()
@@ -1120,25 +1155,16 @@ class PuavoErsExamManager (threading.Thread):
     self.current_day  = datetime.date.today()
     self.current_time = datetime.datetime.now()
 
-    try:
-      exams_information = load_from_json(EXAMS_JSON_FILE)
-    except OSError as e:
-      if e.errno != errno.ENOENT:
-        raise e
+    exams_information = self.get_exams_information()
+    if not exams_information:
       return
 
     try:
-      if not 'schedules' in exams_information:
-        raise Exception('schedules field is missing')
       self.sort_exams_to_dirs( exams_information['schedules'] )
     except Exception as e:
       syslog.syslog(syslog.LOG_WARNING, 'error in sorting exams: %s' % e)
 
     try:
-      if not 'packages' in exams_information:
-        raise Exception('packages field is missing')
-      if not 'schedules' in exams_information:
-        raise Exception('schedules field is missing')
       self.setup_ongoing_exams(exams_information['packages'],
                                exams_information['schedules'])
     except Exception as e:
@@ -1249,8 +1275,6 @@ class PuavoErsExamManager (threading.Thread):
     if not isinstance(exam_packages, dict):
       raise Exception('exam packages is not a dict')
 
-    # XXX we probably need package_id for returns, where should we store it?
-    # XXX (probably in a filesystem?)
     for pkg_id, pkg_info in exam_packages.items():
       start_time = iso_to_local_datetime(pkg_info['start_time'])
       end_time   = iso_to_local_datetime(pkg_info['end_time'])
