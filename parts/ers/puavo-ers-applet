@@ -403,7 +403,6 @@ class PuavoErsApplet:
     self.exam_control.start()
     self.exam_scheduler.start()
 
-
     # Copy "naksu" to NAKSU_BIN_PATH only if it does not exist yet.
     # This is because "naksu" is self-updating and self.NAKSU_BIN_PATH
     # likely has an updated version already.
@@ -1477,6 +1476,57 @@ class PuavoErsExamScheduler (threading.Thread):
       self.do_keycode_change_request = True
 
 
+  def handle_possible_shutdown(self):
+    if not 'XDG_RUNTIME_DIR' in os.environ:
+      syslog.syslog(syslog.LOG_WARNING,
+                    'XDG_RUNTIME_DIR not set, reboot requests can not work')
+      return
+
+    reboot_request_path = os.path.join(os.environ['XDG_RUNTIME_DIR'],
+                                       '.reboot')
+    try:
+      try:
+        reboot_file_modified = datetime.datetime.fromtimestamp(
+                                 os.path.getmtime(reboot_request_path))
+      except OSError as e:
+        if e.errno == errno.ENOENT:
+          return
+        raise e
+    except Exception as e:
+      syslog.syslog(syslog.LOG_WARNING,
+                    'error when checking %s' % reboot_request_path)
+      return
+
+    now = datetime.datetime.now()
+    if reboot_file_modified < (now - datetime.timedelta(minutes=15)):
+      syslog.syslog(syslog.LOG_WARNING,
+                    'stale %s, removing' % reboot_request_path)
+      rm_f(reboot_request_path)
+      return
+
+    syslog.syslog(syslog.LOG_WARNING,
+      'found %s, activating reboot sequence' % reboot_request_path)
+    self.shutdown_server()
+    rm_f(reboot_request_path, False)
+
+    shutdown_counter = 10
+    while shutdown_counter > 0:
+      syslog.syslog(syslog.LOG_INFO,
+                    'in shutdown phase, waiting a bit (%d)' % shutdown_counter)
+      try:
+        self.ping()
+      except Exception as e:
+        # ping errors indicate server is down or going down
+        shutdown_counter -= 4
+      shutdown_counter -= 1
+      time.sleep(1)
+
+    syslog.syslog(syslog.LOG_NOTICE, 'shutting down now')
+    cmd = [ '/usr/bin/gnome-session-quit',
+              '--force', '--no-prompt', '--reboot' ]
+    subprocess.run(cmd)
+
+
   def log_load_exams(self, output):
     try:
       exams_seen = {}
@@ -1596,6 +1646,14 @@ class PuavoErsExamScheduler (threading.Thread):
     return self.server_cmd('reset-exam')
 
 
+  def shutdown_server(self):
+    # we do not expect response from this, except ping failure later
+    try:
+      self.server_cmd('shutdown-server')
+    except Exception as e:
+      pass
+
+
   def start_loaded_exams(self):
     return self.server_cmd('start-loaded-exam')
 
@@ -1641,6 +1699,8 @@ class PuavoErsExamScheduler (threading.Thread):
                             'no communication link to exam server')
 
         old_comm_state = comm_ok
+
+        self.handle_possible_shutdown()
 
         if comm_ok:
           with exam_scheduler_lock:
