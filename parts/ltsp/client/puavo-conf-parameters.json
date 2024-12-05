@@ -1,4 +1,9 @@
 {
+  "puavo.admin.autoreboot.enabled": {
+    "default": "false",
+    "description": "Enable automatic reboot",
+    "typehint": "bool"
+  },
   "puavo.admin.certs.versions": {
     "default": "",
     "description": "List of certificate chain versions",
@@ -194,7 +199,7 @@
     "typehint": "bool"
   },
   "puavo.service.cron.cronjobs": {
-    "default": "puavo-cleanup-old-users",
+    "default": "puavo-autoreboot,puavo-cleanup-old-users",
     "description": "A comma-separated list of puavo-specific cron jobs to run",
     "typehint": "string"
   },
