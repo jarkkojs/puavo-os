@@ -194,10 +194,11 @@ class PuavoExamServer (threading.Thread):
             self.ping()
       except Exception as e:
         syslog.syslog(syslog.LOG_ERR,
-                      'error with websocket connection: %s' % e)
+                      'error with websocket connection to exam-o-matic: %s' % e)
       finally:
         if self.ws:
-          syslog.syslog(syslog.LOG_INFO, 'closing websocket connection')
+          syslog.syslog(syslog.LOG_INFO,
+                        'closing websocket connection to exam-o-matic')
           self.ws.close()
           self.ws = None
 
@@ -232,19 +233,20 @@ class PuavoExamServer (threading.Thread):
 
     if msg['type'] == 'change_keycode':
       syslog.syslog(syslog.LOG_INFO,
-                    'received change keycode message from exams controller')
+                    'received change keycode message from exam-o-matic')
       self.exam_scheduler.request_keycode_change()
       return
 
     if msg['type'] == 'refresh_exams':
       syslog.syslog(syslog.LOG_INFO,
-                    'received refresh exams messages from exams controller')
+                    'received refresh exams messages from exam-o-matic')
       self.exam_sync.trigger_sync_exams()
       return
 
 
   def open_connection(self):
-    syslog.syslog(syslog.LOG_DEBUG, 'opening websocket connection')
+    syslog.syslog(syslog.LOG_DEBUG,
+                  'opening websocket connection to exam-o-matic')
 
     ws = websocket.WebSocket()
 
@@ -265,14 +267,14 @@ class PuavoExamServer (threading.Thread):
     ws.settimeout(45)
 
     syslog.syslog(syslog.LOG_INFO,
-                  'websocket connection opened to exam control server')
+                  'websocket connection opened to exam-o-matic')
 
     return ws
 
 
   def server_uri(self, path, websocket=False):
     syslog.syslog(syslog.LOG_DEBUG,
-                  'using server name %s' % self.exam_server_name)
+                  'using exam-o-matic server name %s' % self.exam_server_name)
 
     if self.exam_server_name.startswith('http://'):
       server_name = self.exam_server_name.replace('http://', '')
@@ -1000,7 +1002,7 @@ class PuavoErsExamControl (threading.Thread):
 
 
   def send_status(self, status):
-    syslog.syslog(syslog.LOG_INFO, 'sending status update to server')
+    syslog.syslog(syslog.LOG_INFO, 'sending status update to exam-o-matic')
 
     response = self.exam_server.post('/v1/servers/status_update', status)
     if not response or response.status_code != requests.codes.ok:
@@ -1536,8 +1538,7 @@ class PuavoErsExamScheduler (threading.Thread):
 
       for decrypt in output['decrypt']:
         if not 'mebs' in decrypt:
-          errmsg = 'exam decrypt missing a list of mebs, we got: %s' \
-                     % decrypt
+          errmsg = 'exam decrypt missing a list of mebs, we got: %s' % decrypt
           syslog.syslog(syslog.LOG_ERR, errmsg)
           continue
 
@@ -1617,7 +1618,7 @@ class PuavoErsExamScheduler (threading.Thread):
 
     except Exception as e:
       syslog.syslog(syslog.LOG_ERR,
-                    'could not interpret status (with student information): %s' % e)
+        'could not interpret status (with student information): %s' % e)
 
 
   def log_status(self, status):
@@ -2096,7 +2097,7 @@ class PuavoErsExamScheduler (threading.Thread):
       with open(self.CMD_IN_PROGRESS_PATH, 'w') as f:
         pass
 
-      syslog.syslog(syslog.LOG_INFO,
+      syslog.syslog(syslog.LOG_DEBUG,
                     'sending command to exam server: "%s"' % cmd)
 
       with open(self.CMD_PATH, 'w') as f:
@@ -2211,7 +2212,8 @@ class PuavoErsAnswerReturn (threading.Thread):
           self.save_answers_state(answers_state)
           syslog.syslog(syslog.LOG_NOTICE, 'sent %s to exam-o-matic' % filename)
         except Exception as e:
-          msg = 'failed to send answers %s (%s)' % (filename, answers_info)
+          msg = 'failed to send answers %s (%s) to exam-o-matic' \
+                  % (filename, answers_info)
           syslog.syslog(syslog.LOG_ERR, '%s: %s' % (msg, e))
 
 
