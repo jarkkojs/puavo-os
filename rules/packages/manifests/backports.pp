@@ -7,6 +7,9 @@ class packages::backports {
   $package_list = [
     'kernel-wedge'      # needed by bpo kernel build
 
+    # firmware packages
+    , 'firmware-iwlwifi'        # needed by crisp kernel (from 6.11 onwards)
+
     # Libreoffice from backports
     , 'fonts-opensymbol'
     , 'liblibreoffice-java'
