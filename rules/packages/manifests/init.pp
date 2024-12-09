@@ -145,6 +145,7 @@ class packages {
     , 'mesa-utils'
     , 'mlocate'
     , 'moreutils'
+    , 'ncdu'
     , 'nmap'
     , 'nvme-cli'
     , 'powertop'
