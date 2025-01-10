@@ -743,6 +743,13 @@
         "nextcloud-desktop": {
             "tags": "default"
         },
+        "nextcloud-talk": {
+            "name": "Nextcloud Talk",
+            "tags": "default, network",
+            "puavopkg": {
+                "id": "nextcloud-talk-desktop"
+            }
+        },
         "Nightcode": {
             "name": "Nightcode",
             "tags": "default",
@@ -2234,6 +2241,7 @@
                 "google-meet",
                 "dropbox",
                 "nextcloud-desktop",
+                "nextcloud-talk",
                 "empathy",
                 "pidgin",
                 "gftp",
