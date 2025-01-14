@@ -328,6 +328,9 @@
         "eshare": {
             "tags": "default"
         },
+        "eva-warenwirtschaft": {
+            "tags": "default"
+        },
         "filezilla": {
             "tags": "default"
         },
@@ -2373,6 +2376,7 @@
                 "ica-word",
                 "ica-excel",
                 "ica-powerpoint",
+                "eva-warenwirtschaft",
                 "MetaSearch9",
                 "projectlibre",
                 "texmaker",
