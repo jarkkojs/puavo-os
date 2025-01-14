@@ -541,6 +541,9 @@
                 "id": "kojo"
             }
         },
+        "lazarus": {
+            "tags": "default, development, education"
+        },
         "lazarus-2.0.10": {
             "tags": "default, development, education"
         },
@@ -2428,6 +2431,7 @@
                 "greenfoot",
                 "eclipse-php",
                 "eric6",
+                "lazarus",
                 "lazarus-2.0.10",
                 "lazarus-2.2.2",
                 "lazarus-2.2.4",
