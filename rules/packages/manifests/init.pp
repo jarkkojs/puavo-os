@@ -430,6 +430,7 @@ class packages {
     , 'libcupsimage2-dev'
     , 'libfontembed-dev'
     , 'libgail-3-dev'
+    , 'libgtk2.0-dev'           # needed by lazarus-ide puavo-pkg
     , 'libgtk-3-dev'
     , 'libgtk-4-dev'
     , 'libmutter-11-dev'
