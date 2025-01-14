@@ -4,6 +4,9 @@
             "keywords": "abitti",
             "tags": "default"
         },
+        "abitti-naksu": {
+            "tags": "default"
+        },
         "acroread": {
             "name": "Acrobat Reader",
             "tags": "default",
@@ -1786,6 +1789,7 @@
                 "org.kde.kdeconnect.app",
                 "org.kde.spectacle",
                 "simplescreenrecorder",
+                "abitti-naksu",
                 "veyon-configurator",
                 "veyon-master",
                 "epson-easymp",
