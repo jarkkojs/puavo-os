@@ -351,7 +351,6 @@ class packages {
 
     [ 'aisleriot'
     , 'dosbox'
-    , 'freeciv-client-gtk'
     , 'gcompris-qt'
     , 'gnome-games'
     , 'gnubg'
@@ -557,7 +556,6 @@ class packages {
     , 'kgeography'
     , 'kmplot'
     , 'kstars'
-    , 'mandelbulber2'
     , 'marble-qt'
     , 'openbabel'
     , 'pspp'
