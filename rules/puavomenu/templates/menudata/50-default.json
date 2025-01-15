@@ -4,6 +4,9 @@
             "keywords": "abitti",
             "tags": "default"
         },
+        "abitti-naksu": {
+            "tags": "default"
+        },
         "acroread": {
             "name": "Acrobat Reader",
             "tags": "default",
@@ -323,6 +326,9 @@
             "tags": "default"
         },
         "eshare": {
+            "tags": "default"
+        },
+        "eva-warenwirtschaft": {
             "tags": "default"
         },
         "filezilla": {
@@ -745,6 +751,13 @@
         },
         "nextcloud-desktop": {
             "tags": "default"
+        },
+        "nextcloud-talk": {
+            "name": "Nextcloud Talk",
+            "tags": "default, network",
+            "puavopkg": {
+                "id": "nextcloud-talk-desktop"
+            }
         },
         "Nightcode": {
             "name": "Nightcode",
@@ -1779,6 +1792,7 @@
                 "org.kde.kdeconnect.app",
                 "org.kde.spectacle",
                 "simplescreenrecorder",
+                "abitti-naksu",
                 "veyon-configurator",
                 "veyon-master",
                 "epson-easymp",
@@ -2232,6 +2246,7 @@
                 "google-meet",
                 "dropbox",
                 "nextcloud-desktop",
+                "nextcloud-talk",
                 "empathy",
                 "pidgin",
                 "gftp",
@@ -2359,6 +2374,7 @@
                 "ica-word",
                 "ica-excel",
                 "ica-powerpoint",
+                "eva-warenwirtschaft",
                 "MetaSearch9",
                 "projectlibre",
                 "texmaker",
