@@ -517,7 +517,6 @@ class packages {
     , 'idle'
     , 'idle-python3.11'
     , 'kturtle'
-    , 'lazarus'
     , 'lokalize'
     , 'meld'
     , 'okteta'
