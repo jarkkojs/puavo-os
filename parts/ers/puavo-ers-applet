@@ -2161,8 +2161,8 @@ class PuavoErsAnswerReturn (threading.Thread):
 
 
   def handle_new_answer_set(self, answers_filename, session_state):
-    if ('package' in session_state and 'id' in session_state['package'] \
-          and isinstance(session_state['package']['id']), str):
+    if 'package' in session_state and 'id' in session_state['package'] \
+         and isinstance(session_state['package']['id'], str):
       package_id = session_state['package']['id']
       self.update_latest_on_answers_state(package_id, answers_filename)
     else:
