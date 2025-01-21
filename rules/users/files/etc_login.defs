@@ -173,7 +173,7 @@ UID_MIN			 1000
 UID_MAX			60000
 # System accounts
 #SYS_UID_MIN		  100
-#SYS_UID_MAX		  999
+SYS_UID_MAX		  950
 # Extra per user uids
 SUB_UID_MIN		   100000
 SUB_UID_MAX		600100000
