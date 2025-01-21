@@ -328,7 +328,7 @@ class PuavoExamServer (threading.Thread):
     return response
 
 
-  def post(self, path, data):
+  def post(self, path, data, files=None):
     uri = self.server_uri(path)
 
     syslog.syslog(syslog.LOG_DEBUG, 'sending post request to %s' % uri)
@@ -341,12 +341,15 @@ class PuavoExamServer (threading.Thread):
     json_data = json.dumps(data)
 
     try:
-      response = requests.post(uri,
-                              auth=HTTPBasicAuth(self.ldap_dn,
-                                                 self.ldap_password),
-                              params=req_params,
-                              data=json_data,
-                              timeout=20)
+      post_args = {
+        'auth':    HTTPBasicAuth(self.ldap_dn, self.ldap_password),
+        'params':  req_params,
+        'data':    json_data,
+        'timeout': 20,
+      }
+      if files:
+        post_args['files'] = files
+      response = requests.post(uri, **post_args)
       if response.status_code != requests.codes.ok:
         syslog.syslog(syslog.LOG_ERR,
           'error on POST request to %s: received status code %s' \
@@ -2219,17 +2222,15 @@ class PuavoErsAnswerReturn (threading.Thread):
 
   def return_one_answer_package(self, package_id, answers_filename):
     answer_filename_path = os.path.join(ANSWERS_DIR, answers_filename)
-    with open(answer_filename_path, 'rb') as f:
-      answer_package = f.read()
+    with open(answer_filename_path, 'rb') as file:
+      files = { 'answers_file': file }
 
-    answers_encoded = base64.b64encode(answer_package).decode('utf-8')
     data = {
-      'contents':   answers_encoded,
       'filename':   answers_filename,
       'package_id': package_id,
     }
 
-    response = self.exam_server.post('/v1/answers/upload', data)
+    response = self.exam_server.post('/v1/answers/upload', data, files)
     if not response or response.status_code != requests.codes.ok:
       raise Exception('sending answer package to exam-o-matic failed')
 
