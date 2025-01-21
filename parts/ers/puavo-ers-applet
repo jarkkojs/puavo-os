@@ -114,7 +114,7 @@ def save_as_json(path, data):
     if filecmp.cmp(tmpfile, path, False):
       rm_f(tmpfile, False)
       return False
-  except Exception as e:
+  except OSError as e:
     if e.errno != errno.ENOENT:
       raise e
 
@@ -2180,10 +2180,10 @@ class PuavoErsAnswerReturn (threading.Thread):
 
     try:
       with self.answer_state_lock:
-        state = load_from_json(ANSWERS_STATE_PATH)
+        state = load_from_json(self.ANSWERS_STATE_PATH)
         if not isinstance(state, dict):
           raise Exception('answers state is not dict')
-    except Exception as e:
+    except OSError as e:
       if e.errno != errno.ENOENT:
         syslog.syslog(syslog.LOG_WARNING,
                       'could not read answers state: %s' % e)
@@ -2246,7 +2246,7 @@ class PuavoErsAnswerReturn (threading.Thread):
 
   def save_answers_state(self, answers_state):
     with self.answer_state_lock:
-      save_as_json(ANSWERS_STATE_PATH, answers_state)
+      save_as_json(self.ANSWERS_STATE_PATH, answers_state)
 
 
   def update_latest_on_answers_state(self, package_id, answers_filename):
