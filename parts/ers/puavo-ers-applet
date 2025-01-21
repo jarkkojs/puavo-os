@@ -2221,14 +2221,23 @@ class PuavoErsAnswerReturn (threading.Thread):
 
 
   def return_one_answer_package(self, package_id, answers_filename):
-    answer_filename_path = os.path.join(ANSWERS_DIR, answers_filename)
-    with open(answer_filename_path, 'rb') as file:
-      files = { 'answers_file': file }
+    answers_filename_path = os.path.join(ANSWERS_DIR, answers_filename)
+    try:
+      with open(answers_filename_path, 'rb') as f:
+        files = { 'answers_file': f }
+        answers_file_contents = f.read()
+        answers_file_size = os.fstat( f.fileno() ).st_size
 
-    data = {
-      'filename':   answers_filename,
-      'package_id': package_id,
-    }
+      answers_file_sha256 == hashlib.sha256(answers_file_contents).hexdigest()
+
+      data = {
+        'answers_file': answers_filename,
+        'file_sha256':  answers_file_sha256,
+        'file_size':    answers_file_size,
+        'package_id':   package_id,
+      }
+    except Exception as e:
+      raise Exception('could not read file %s: %s' % (answers_filename_path, e))
 
     response = self.exam_server.post('/v1/answers/upload', data, files)
     if not response or response.status_code != requests.codes.ok:
