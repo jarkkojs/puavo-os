@@ -2208,19 +2208,26 @@ class PuavoErsAnswerReturn (threading.Thread):
         answers_state[filename]['sent'] = None
       if not answers_info['sent']:
         try:
-          self.return_one_answer_package(answers_info['id'], filename)
+          self.send_an_answer_package(answers_info['id'], filename)
+        except Exception as e:
+          msg = 'failed to send an answer package %s (%s) to exam-o-matic' \
+                  % (filename, answers_info)
+          syslog.syslog(syslog.LOG_ERR, '%s: %s' % (msg, e))
+          return
+
+        syslog.syslog(syslog.LOG_NOTICE, 'sent %s to exam-o-matic' % filename)
+
+        try:
           answers_state[filename]['sent'] \
             = datetime.datetime.now().replace(microsecond=0).astimezone() \
                       .isoformat()
           self.save_answers_state(answers_state)
-          syslog.syslog(syslog.LOG_NOTICE, 'sent %s to exam-o-matic' % filename)
         except Exception as e:
-          msg = 'failed to send answers %s (%s) to exam-o-matic' \
-                  % (filename, answers_info)
-          syslog.syslog(syslog.LOG_ERR, '%s: %s' % (msg, e))
+          syslog.syslog(syslog.LOG_ERR,
+                        'could not record that an answer was sent: %s' % e)
 
 
-  def return_one_answer_package(self, package_id, answers_filename):
+  def send_an_answer_package(self, package_id, answers_filename):
     answers_filename_path = os.path.join(ANSWERS_DIR, answers_filename)
     try:
       with open(answers_filename_path, 'rb') as f:
