@@ -2164,6 +2164,7 @@ class PuavoErsExamScheduler (threading.Thread):
 
 class PuavoErsAnswerReturn (threading.Thread):
   ANSWERS_STATE_PATH = os.path.join(PUAVO_ERS_DIR, 'answers.json')
+  MAX_TRY_COUNT = 180
 
   def __init__(self, exam_server):
     threading.Thread.__init__(self)
@@ -2210,20 +2211,31 @@ class PuavoErsAnswerReturn (threading.Thread):
 
 
   def load_answers_state(self):
-    # XXX 'latest_try' string should be converted to datetime
-    state = {}
+    all_answers_state = {}
 
     try:
       with self.answer_state_lock:
-        state = load_from_json(self.ANSWERS_STATE_PATH)
-        if not isinstance(state, dict):
+        all_answers_state = load_from_json(self.ANSWERS_STATE_PATH)
+        if not isinstance(all_answers_state, dict):
           raise Exception('answers state is not dict')
+        for filename in list(all_answers_state):
+          try:
+            if all_answers_state[filename]['latest_try']:
+              all_answers_state[filename]['latest_try'] \
+                = iso_as_timezone(all_answers_state[filename]['latest_try'],
+                                  self.logger)
+          except Exception as e:
+            self.logger.log(syslog.LOG_WARNING,
+              'removing answer state of %s because of errors: %s' \
+                % (filename, e))
+            del all_answers_state[filename]
+
     except OSError as e:
       if e.errno != errno.ENOENT:
         self.logger.log(syslog.LOG_WARNING,
                         'could not read answers state: %s' % e)
 
-    return state
+    return all_answers_state
 
 
   def return_answers(self):
@@ -2248,54 +2260,56 @@ class PuavoErsAnswerReturn (threading.Thread):
 
 
   def handle_an_answer_return(self, filename, answer_state):
-      if not 'sent' in answer_state:
-        answer_state['sent'] = None
-      if answer_state['sent']:
-        return
+    if not 'sent' in answer_state:
+      answer_state['sent'] = None
+    if answer_state['sent']:
+      return
 
-      if not ('id' in answer_state and isinstance(answer_state['id'], str)):
-        answer_state['id'] = None
-      if not ('latest_try' in answer_state \
-                and isinstance(answer_state['latest_try'], datetime.datetime)):
-        answer_state['latest_try'] = None
-      if not ('retry_count' in answer_state \
-                and isinstance(answer_state['retry_count'], int)):
-        answer_state['retry_count'] = 0
+    if not ('id' in answer_state and isinstance(answer_state['id'], str)):
+      answer_state['id'] = None
+    if not ('latest_try' in answer_state \
+              and isinstance(answer_state['latest_try'], datetime.datetime)):
+      answer_state['latest_try'] = None
+    if not ('try_count' in answer_state \
+              and isinstance(answer_state['try_count'], int)):
+      answer_state['try_count'] = 0
 
-      if answer_state['retry_count'] == 180:
-        self.logger.log(syslog.LOG_NOTICE,
-                        'giving up on sending answers %s' % filename)
-        answer_state['retry_count'] += 1
-      if answer_state['retry_count'] > 180:
-        return
-
-      now = datetime.datetime.now()
-      if answer_state['latest_try']:
-        minutes_to_wait_for \
-          = answer_state['retry_count'] * datetime.timedelta(minutes=1)
-        next_retry_time = answer_state['latest_try'] + minutes_to_wait_for
-        if now < next_retry_time:
-          return
-
-      answer_state['latest_try'] = now
+    if answer_state['try_count'] == self.MAX_TRY_COUNT:
       self.logger.log(syslog.LOG_NOTICE,
-                      'going to send answers %s (retry=%d)' \
-                         % (filename, answer_state['retry_count']))
+                      'giving up on sending answers %s' % filename)
+      answer_state['try_count'] += 1
+    if answer_state['try_count'] > self.MAX_TRY_COUNT:
+      return
 
-      sent_ok = False
-      try:
-        self.send_an_answer_package(answer_state['id'], filename)
-        sent_ok = True
-        self.logger.log(syslog.LOG_NOTICE, 'sent %s to exam-o-matic' % filename)
-      except Exception as e:
-        msg = 'failed to send an answer package %s to exam-o-matic' % filename
-        self.logger.log(syslog.LOG_ERR, '%s: %s' % (msg, e))
-        answer_state[filename]['retry_count'] += 1
+    now = datetime.datetime.now()
+    if answer_state['latest_try']:
+      minutes_to_wait_for \
+        = answer_state['try_count'] * datetime.timedelta(minutes=1)
+      next_retry_time = answer_state['latest_try'] + minutes_to_wait_for
+      if now.astimezone() < next_retry_time:
+        return
 
-      if sent_ok:
-        answer_state[filename]['sent'] \
-          = datetime.datetime.now().replace(microsecond=0).astimezone() \
-                    .isoformat()
+    answer_state['latest_try'] = now.replace(microsecond=0).astimezone()
+    answer_state['try_count'] += 1
+
+    msg = 'going to send answers %s' % filename
+    if answer_state['try_count'] > 1:
+      msg = '%s (retry=%d)' % (msg, answer_state['try_count']-1)
+    self.logger.log(syslog.LOG_NOTICE, msg)
+
+    sent_ok = False
+    try:
+      self.send_an_answer_package(answer_state['id'], filename)
+      sent_ok = True
+      self.logger.log(syslog.LOG_NOTICE, 'sent %s to exam-o-matic' % filename)
+    except Exception as e:
+      msg = 'failed to send an answer package %s to exam-o-matic' % filename
+      self.logger.log(syslog.LOG_ERR, '%s: %s' % (msg, e))
+
+    if sent_ok:
+      answer_state['sent'] \
+        = datetime.datetime.now().replace(microsecond=0).astimezone() \
+                  .isoformat()
 
 
   def send_an_answer_package(self, package_id, answers_filename):
@@ -2322,9 +2336,12 @@ class PuavoErsAnswerReturn (threading.Thread):
 
 
   def save_answers_state(self, all_answers_state):
-    # XXX 'latest_try' datetime should be converted to string
+    converted_all_answers_state = copy.deepcopy(all_answers_state)
+    for answer_state in converted_all_answers_state.values():
+      if 'latest_try' in answer_state:
+        answer_state['latest_try'] = answer_state['latest_try'].isoformat()
     with self.answer_state_lock:
-      save_as_json(self.ANSWERS_STATE_PATH, all_answers_state)
+      save_as_json(self.ANSWERS_STATE_PATH, converted_all_answers_state)
 
 
   def update_latest_on_answers_state(self, package_id, answers_filename):
