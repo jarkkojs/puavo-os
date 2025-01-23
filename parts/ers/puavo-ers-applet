@@ -2031,6 +2031,7 @@ class PuavoErsExamScheduler (threading.Thread):
                  + ' resetting server state'
         self.logger.log(syslog.LOG_INFO, msg)
         self.reset_exam()
+        self.answer_return.trigger_returns()
       else:
         self.logger.log(syslog.LOG_INFO, 'no exams to schedule')
       return
@@ -2041,6 +2042,7 @@ class PuavoErsExamScheduler (threading.Thread):
       if need_reload:
         self.logger.log(syslog.LOG_INFO, 'loading exams')
         self.virtualboxcontrol.link_down()
+        self.answer_return.trigger_returns()
         self.load_exams()
         self.virtualboxcontrol.link_up()
         self.finish_time = current_exam_package.end_time
@@ -2204,6 +2206,8 @@ class PuavoErsAnswerReturn (threading.Thread):
       self.logger.log(syslog.LOG_ERR,
                       'no package id known for the latest answer set')
 
+
+  def trigger_returns(self):
     self.answer_return_lock.acquire()
     self.do_answer_return = True
     self.answer_return_lock.notify()
