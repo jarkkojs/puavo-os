@@ -57,8 +57,8 @@ FORCELOAD_BEFORE_START_TIMEDELTA = datetime.timedelta(minutes=5)
 PRELOAD_TIMEDELTA = datetime.timedelta(minutes=15)
 
 # current_exam_package must be read/written only when exam_scheduler_lock
-# is taken (it is used by PuavoErsExamManager and PuavoErsExamScheduler
-# threads)
+# is taken (it is used by PuavoErsAnswerReturn, PuavoErsExamManager and
+# PuavoErsExamScheduler threads)
 exam_scheduler_lock = threading.Lock()
 current_exam_package = None
 current_zip_name = None
@@ -406,13 +406,14 @@ class PuavoErsApplet:
     self.menu.show_all()
 
     self.exam_server = PuavoExamServer()
-    self.answer_return = PuavoErsAnswerReturn(self.exam_server)
     self.exam_manager = PuavoErsExamManager(self.exam_sync_active)
     self.exam_sync = PuavoErsExamSync(self.exam_server, self.exam_manager,
                                       self.exam_sync_active)
     self.exam_control = PuavoErsExamControl(self.exam_server)
+    self.answer_return = PuavoErsAnswerReturn(self.exam_server)
     self.exam_scheduler = PuavoErsExamScheduler(self.exam_control,
                                                 self.answer_return)
+    self.answer_return.connect_exam_scheduler(self.exam_scheduler)
 
     self.exam_server.add_other_threads(self.exam_scheduler, self.exam_sync)
 
@@ -1484,6 +1485,8 @@ class PuavoErsExamScheduler (threading.Thread):
     self.logger                    = Logger('exam-scheduler')
     self.virtualboxcontrol         = VirtualBoxControl()
 
+    self.session_state = self.load_session_state_none_if_no_session()
+
     self.keycode_change_request_lock = threading.Lock()
 
 
@@ -1750,7 +1753,7 @@ class PuavoErsExamScheduler (threading.Thread):
       time.sleep(3)
 
 
-  def maybe_store_answers(self, currently_loaded_exams, status, session_state):
+  def maybe_store_answers(self, currently_loaded_exams, status):
     if len(currently_loaded_exams) == 0:
       return
 
@@ -1771,7 +1774,7 @@ class PuavoErsExamScheduler (threading.Thread):
       self.logger.log(syslog.LOG_INFO,
                       'logging status as we are taking out the answers')
       self.log_status_with_students(status)
-      self.store_answers(currently_loaded_exams, session_state)
+      self.store_answers(currently_loaded_exams)
     else:
       # Trying to store answers when there are none returns an error.
       # Perhaps this logic could be such that it is left for abitti-ktpapi
@@ -1781,7 +1784,7 @@ class PuavoErsExamScheduler (threading.Thread):
     self.answers_stored_time = now
 
 
-  def store_answers(self, currently_loaded_exams, session_state):
+  def store_answers(self, currently_loaded_exams):
     now_as_string = datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
 
     if len(currently_loaded_exams) == 1:
@@ -1796,7 +1799,8 @@ class PuavoErsExamScheduler (threading.Thread):
     self.store_exam_results(answers_filename_fp)
 
     try:
-      self.answer_return.handle_new_answer_set(answers_filename, session_state)
+      self.answer_return.handle_new_answer_set(answers_filename,
+                                               self.session_state)
     except Exception as e:
       self.logger.log(syslog.LOG_WARNING,
         'answers stored but could not connect package id to answers %s: %s' \
@@ -1874,10 +1878,10 @@ class PuavoErsExamScheduler (threading.Thread):
     return last_finished_time
 
 
-  def running_the_expected_exams(self, session_state, current_exam_package,
+  def running_the_expected_exams(self, current_exam_package,
                                  currently_loaded_exam_uuids):
-    if session_state:
-      return current_exam_package.id == session_state['package']['id']
+    if self.session_state:
+      return current_exam_package.id == self.session_state['package']['id']
 
     # we should have had session state for this but in case something funky
     # has happened we can also compare the running exam set (this funky might
@@ -1886,8 +1890,7 @@ class PuavoErsExamScheduler (threading.Thread):
     return set(current_exam_uuids) == set(currently_loaded_exam_uuids)
 
 
-  def update_exams_finished_time(self, status, session_state,
-                                 current_exam_package,
+  def update_exams_finished_time(self, status, current_exam_package,
                                  currently_loaded_exam_uuids):
     now = datetime.datetime.now()
 
@@ -1914,7 +1917,7 @@ class PuavoErsExamScheduler (threading.Thread):
 
     # active students with an active exam package
 
-    if self.running_the_expected_exams(session_state, current_exam_package,
+    if self.running_the_expected_exams(current_exam_package,
                                        currently_loaded_exam_uuids):
       # if running the expected exams we have time until the end of the day
       self.finish_time = self.end_of_today()
@@ -1974,11 +1977,16 @@ class PuavoErsExamScheduler (threading.Thread):
                       'could not get monitoring passphrase: %s' % e)
 
 
-  def update_status_to_control(self, status, session_state):
+  def update_status_to_control(self, status):
     self.exam_control.update_status(status,
-                                    session_state,
+                                    self.session_state,
                                     self.monitoring_passphrase,
                                     self.server_version)
+
+
+  def get_session_state(self):
+    with exam_scheduler_lock:
+      return self.session_state
 
 
   def schedule_exams(self, current_exam_package):
@@ -1997,10 +2005,8 @@ class PuavoErsExamScheduler (threading.Thread):
 
     self.log_status(status)
 
-    session_state = self.load_session_state_none_if_no_session()
-
     self.update_monitoring_passphrase()
-    self.update_status_to_control(status, session_state)
+    self.update_status_to_control(status)
 
     if not self.exam_scheduler_enabled:
       self.virtualboxcontrol.link_up()
@@ -2011,12 +2017,12 @@ class PuavoErsExamScheduler (threading.Thread):
     currently_loaded_exam_uuids \
       = [ exam['examUuid'] for exam in currently_loaded_exams ]
 
-    self.update_exams_finished_time(status, session_state, current_exam_package,
+    self.update_exams_finished_time(status, current_exam_package,
                                     currently_loaded_exam_uuids)
 
     exams_finished = self.exams_are_finished()
     if exams_finished:
-      self.maybe_store_answers(currently_loaded_exams, status, session_state)
+      self.maybe_store_answers(currently_loaded_exams, status)
 
     if self.has_started and not exams_finished:
       self.logger.log(syslog.LOG_INFO,
@@ -2024,21 +2030,22 @@ class PuavoErsExamScheduler (threading.Thread):
       return
 
     if not current_exam_package:
-      self.save_session_state(None)
       self.virtualboxcontrol.link_down()
       if self.has_started:
         msg = 'exams ongoing but should not be according to schedule,' \
                  + ' resetting server state'
         self.logger.log(syslog.LOG_INFO, msg)
         self.reset_exam()
-        self.answer_return.trigger_returns()
       else:
         self.logger.log(syslog.LOG_INFO, 'no exams to schedule')
+      self.save_session_state(None)
+      if self.has_started:
+        self.answer_return.trigger_returns()
       return
 
     try:
-      need_reload = not self.running_the_expected_exams(session_state,
-                      current_exam_package, currently_loaded_exam_uuids)
+      need_reload = not self.running_the_expected_exams(current_exam_package,
+                      currently_loaded_exam_uuids)
       if need_reload:
         self.logger.log(syslog.LOG_INFO, 'loading exams')
         self.virtualboxcontrol.link_down()
@@ -2097,6 +2104,7 @@ class PuavoErsExamScheduler (threading.Thread):
 
     try:
       data = { 'package': { 'id': package_id } }
+      self.session_state = data
       if save_as_json(self.SESSION_STATE_PATH, data):
         self.logger.log(syslog.LOG_INFO, logmsg)
     except Exception as e:
@@ -2178,6 +2186,10 @@ class PuavoErsAnswerReturn (threading.Thread):
     self.answer_state_lock = threading.Lock()
 
 
+  def connect_exam_scheduler(self, exam_scheduler):
+    self.exam_scheduler = exam_scheduler
+
+
   def run(self):
     while True:
       try:
@@ -2190,7 +2202,13 @@ class PuavoErsAnswerReturn (threading.Thread):
           self.answer_return_lock.wait(timeout=300)
         self.do_answer_return = False
         self.answer_return_lock.release()
-        self.return_answers()
+
+        # Run answer returns with exam scheduler lock, because exam
+        # scheduler may be adding answers that should be handled by
+        # this one and if this reads an answer file before answer state
+        # is updated, it will be missing a package id and that is not nice.
+        with exam_scheduler_lock:
+          self.return_answers()
       except Exception as e:
         self.logger.log(syslog.LOG_ERR, 'error when returning answers: %s' % e)
 
@@ -2242,6 +2260,52 @@ class PuavoErsAnswerReturn (threading.Thread):
     return all_answers_state
 
 
+  def mark_final_answers_as_final(self, all_answers_state):
+    logger.log(syslog.LOG_NOTICE, 'checking which answers are final')
+
+    current_session_package_id = None
+    session_state = self.exam_scheduler.get_session_state()
+    if session_state:
+      currently_ongoing_session_package_id = session_state['package']['id']
+
+    exams_by_package_id = {}
+    for filename, answerpackage_state in all_answers_state.items():
+      # when considering exam "finality", we do not bother with answer sets
+      # that lack a package id
+      package_id = answerpackage_state['id']
+      if not package_id:
+        continue
+      if not package_id in exams_by_package_id:
+        exams_by_package_id[package_id] = []
+      exams_by_package_id[package_id].append(filename)
+
+    for package_id, filename_list in exams_by_package_id.items():
+      answers = [ [ f, all_answers_state[f] ] for f in filename_list ]
+      logger.log(syslog.LOG_NOTICE,     # XXX
+                 'answers which share a package id: %s' % answers)
+      sort_fn = lambda a: iso_as_timezoned(a[1]['saved_at'], self.logger)
+      sorted_answers = sorted(answers, key=sort_fn)
+      *first_answer_sets, last_answer_set = sorted_answers
+      # if a package id has a newer answer set available, mark the older ones
+      # as "not final"
+      for a in first_answer_sets:
+        filename, answer_set = a
+        if answer_set['is_final'] != 'false':
+          logger.log(syslog.LOG_NOTICE,
+                     'marking answers %s is not final' % answer_set)
+          answer_set['is_final'] = 'false'
+
+      # the latest answer set is final in case the corresponding package id
+      # is not running in an active session (current session package
+      # id may be None here)
+      if package_id != current_session_package_id:
+          filename, answer_set = last_answer_set
+          if answer_set['is_final'] != 'true':
+            logger.log(syslog.LOG_NOTICE,
+                       'marking answers %s is final' % filename)
+            answer_set['is_final'] = 'true'
+
+
   def return_answers(self):
     answer_files_fp = glob.glob( os.path.join(ANSWERS_DIR, '*.meb') )
     answer_files = [ os.path.basename(p) for p in answer_files_fp ]
@@ -2250,6 +2314,8 @@ class PuavoErsAnswerReturn (threading.Thread):
     for af_name in answer_files:
       if not af_name in all_answers_state:
         all_answers_state[af_name] = {}
+
+    self.mark_final_answers_as_final(all_answers_state)
 
     for filename, answerpackage_state in all_answers_state.items():
       try:
@@ -2264,19 +2330,25 @@ class PuavoErsAnswerReturn (threading.Thread):
 
 
   def handle_an_answer_return(self, filename, answer_state):
-    if not 'sent' in answer_state:
-      answer_state['sent'] = None
-    if answer_state['sent']:
+    if not 'sent_at' in answer_state:
+      answer_state['sent_at'] = None
+    if answer_state['sent_at']:
       return
 
     if not ('id' in answer_state and isinstance(answer_state['id'], str)):
       answer_state['id'] = None
+      # mark an answer set without a package id like this:
+      answer_state['is_final'] = 'unknown'
+
     if not ('latest_try' in answer_state \
               and isinstance(answer_state['latest_try'], datetime.datetime)):
       answer_state['latest_try'] = None
     if not ('try_count' in answer_state \
               and isinstance(answer_state['try_count'], int)):
       answer_state['try_count'] = 0
+    if not ('is_final' in answer_state \
+              and isinstance(answer_state['is_final'], str)):
+      answer_state['is_final'] = 'indeterminate'
 
     if answer_state['try_count'] == self.MAX_TRY_COUNT:
       self.logger.log(syslog.LOG_NOTICE,
@@ -2292,6 +2364,12 @@ class PuavoErsAnswerReturn (threading.Thread):
       next_retry_time = answer_state['latest_try'] + minutes_to_wait_for
       if now.astimezone() < next_retry_time:
         return
+
+    if answer_state['is_final'] == 'indeterminate':
+      # not returning yet, we will have to wait for proper "is_final" status
+      self.logger.log(syslog.LOG_NOTICE,
+        'not returning %s quite yet, we do not know if it is final' % filename)
+      return
 
     answer_state['latest_try'] = now.replace(microsecond=0).astimezone()
     answer_state['try_count'] += 1
@@ -2311,7 +2389,7 @@ class PuavoErsAnswerReturn (threading.Thread):
       self.logger.log(syslog.LOG_ERR, '%s: %s' % (msg, e))
 
     if sent_ok:
-      answer_state['sent'] \
+      answer_state['sent_at'] \
         = datetime.datetime.now().replace(microsecond=0).astimezone() \
                   .isoformat()
 
@@ -2350,7 +2428,14 @@ class PuavoErsAnswerReturn (threading.Thread):
 
   def update_latest_on_answers_state(self, package_id, answers_filename):
     state = self.load_answers_state()
-    state[answers_filename] = { 'id': package_id, 'sent': None }
+    saved_at = datetime.datetime.now.replace(microsecond=0) \
+                       .astimezone().isoformat()
+    state[answers_filename] = {
+      'id':       package_id,
+      'is_final': 'indeterminate',
+      'saved_at': saved_at,
+      'sent_at':  None,
+    }
     self.save_answers_state(state)
     msg = 'recorded new answer file %s is for package id %s' \
             % (answers_filename, package_id)
