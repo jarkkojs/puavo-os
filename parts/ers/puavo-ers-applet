@@ -1402,7 +1402,7 @@ class VirtualBoxControl:
     self.logger = Logger('virtualbox-control')
 
 
-  def get_link_state():
+  def get_link_state(self):
     is_up = None
 
     try:
@@ -1421,9 +1421,9 @@ class VirtualBoxControl:
     return is_up
 
 
-  def ensure_virtualbox_link_up(is_requested_up):
+  def ensure_virtualbox_link_up(self, is_requested_up):
     try:
-      is_current_link_up = __class__.get_link_state()
+      is_current_link_up = self.get_link_state()
       if is_current_link_up != None:
         if is_current_link_up == is_requested_up:
           # requested state matches link state, doing nothing
@@ -1445,12 +1445,12 @@ class VirtualBoxControl:
       self.logger.log(syslog.LOG_WARNING, errmsg)
 
 
-  def link_up():
-    __class__.ensure_virtualbox_link_up(True)
+  def link_up(self):
+    self.ensure_virtualbox_link_up(True)
 
 
-  def link_down():
-    __class__.ensure_virtualbox_link_up(False)
+  def link_down(self):
+    self.ensure_virtualbox_link_up(False)
 
 
 class PuavoErsExamScheduler (threading.Thread):
