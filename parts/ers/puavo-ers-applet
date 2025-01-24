@@ -132,8 +132,8 @@ def save_as_json(path, data):
   return True
 
 
-def timestring_with_strftime(timestring, format_string):
-  datetime_obj = to_datetime(timestring)
+def timestring_with_strftime(timestring, format_string, logger):
+  datetime_obj = to_datetime(timestring, logger)
   if not datetime_obj:
     return None
   return datetime_obj.strftime(format_string)
@@ -1139,7 +1139,9 @@ class PuavoErsExamManager (threading.Thread):
 
         if self.exam_manager_enabled:
           with exam_scheduler_lock:
+            self.logger.log(syslog.LOG_DEBUG, 'got exam scheduler lock')
             self.manage_exams()
+          self.logger.log(syslog.LOG_DEBUG, 'released exam scheduler lock')
         else:
           self.logger.log(syslog.LOG_INFO, 'exam manager has been disabled')
 
@@ -1595,7 +1597,8 @@ class PuavoErsExamScheduler (threading.Thread):
   def session_status_msg(self, status):
     start_time = None
     if status['hasStarted'] and 'startTime' in status:
-      start_time = timestring_with_strftime(status['startTime'], '%H:%M:%S')
+      start_time = timestring_with_strftime(status['startTime'], '%H:%M:%S',
+                                            self.logger)
 
     format_string = 'exam session status:'                                 \
                       + ' hasStarted={hasStarted}'                         \
@@ -1628,11 +1631,14 @@ class PuavoErsExamScheduler (threading.Thread):
 
         for student in student_list:
           exam_started  = timestring_with_strftime(student.get('examStarted'),
-                                                   '%H:%M:%S')
+                                                   '%H:%M:%S',
+                                                   self.logger)
           exam_finished = timestring_with_strftime(student.get('examFinished'),
-                                                   '%H:%M:%S')
+                                                   '%H:%M:%S',
+                                                   self.logger)
           update_time   = timestring_with_strftime(student.get('updateTime'),
-                                                   '%H:%M:%S')
+                                                   '%H:%M:%S',
+                                                   self.logger)
           format_string = '    studentUuid={studentUuid}'         \
                             + ' studentStatus={studentStatus}' \
                             + ' examStarted={examStarted}'     \
@@ -1738,7 +1744,9 @@ class PuavoErsExamScheduler (threading.Thread):
 
         if comm_ok:
           with exam_scheduler_lock:
+            self.logger.log(syslog.LOG_DEBUG, 'got exam scheduler lock')
             self.schedule_exams(current_exam_package)
+          self.logger.log(syslog.LOG_DEBUG, 'released exam scheduler lock')
 
       except ExamSchedulerNotActive as e:
         if is_enabled != self.exam_scheduler_enabled:
@@ -1848,12 +1856,12 @@ class PuavoErsExamScheduler (threading.Thread):
       if ('pingError' in student) and (student['pingError'] == False):
         # someone still has a connection, we have at least one active student
         self.logger.log(syslog.LOG_DEBUG,
-                        'at least someone is connected and doing the exam')
+                        'at least someone is connected to the exam server')
         return True
 
       # this student has not finished, yet has no active connection
       if ('updateTime' in student) and (student['updateTime'] != None):
-        update_time = to_datetime(student['updateTime'])
+        update_time = to_datetime(student['updateTime'], self.logger)
         five_minutes_before_now = now - datetime.timedelta(minutes=5)
         if update_time >= five_minutes_before_now.astimezone():
           # but he/she has updated in the last five minutes, so still counts
@@ -1871,7 +1879,7 @@ class PuavoErsExamScheduler (threading.Thread):
     last_finished_time = None
     for student in status['students']:
       if ('examFinished' in student) and (student['examFinished'] != None):
-        finish_time = to_datetime(student['examFinished'])
+        finish_time = to_datetime(student['examFinished'], self.logger)
         if not last_finished_time or last_finished_time < finish_time:
           last_finished_time = finish_time
 
@@ -1908,7 +1916,7 @@ class PuavoErsExamScheduler (threading.Thread):
 
     # active students
 
-    self.logger.log(syslog.LOG_INFO, 'there are still active students')
+    self.logger.log(syslog.LOG_INFO, 'there are still connected students')
     if not current_exam_package:
       self.logger.log(syslog.LOG_INFO,
                       'there are no upcoming exams, we let students continue')
@@ -1985,8 +1993,7 @@ class PuavoErsExamScheduler (threading.Thread):
 
 
   def get_session_state(self):
-    with exam_scheduler_lock:
-      return self.session_state
+    return self.session_state
 
 
   def schedule_exams(self, current_exam_package):
@@ -2207,8 +2214,7 @@ class PuavoErsAnswerReturn (threading.Thread):
         # scheduler may be adding answers that should be handled by
         # this one and if this reads an answer file before answer state
         # is updated, it will be missing a package id and that is not nice.
-        with exam_scheduler_lock:
-          self.return_answers()
+        self.return_answers()
       except Exception as e:
         self.logger.log(syslog.LOG_ERR, 'error when returning answers: %s' % e)
 
@@ -2242,10 +2248,11 @@ class PuavoErsAnswerReturn (threading.Thread):
           raise Exception('answers state is not dict')
         for filename in list(all_answers_state):
           try:
-            if all_answers_state[filename]['latest_try']:
-              all_answers_state[filename]['latest_try'] \
-                = iso_as_timezone(all_answers_state[filename]['latest_try'],
-                                  self.logger)
+            if 'latest_try' in all_answers_state[filename] \
+              and all_answers_state[filename]['latest_try']:
+                all_answers_state[filename]['latest_try'] \
+                  = iso_as_timezone(all_answers_state[filename]['latest_try'],
+                                    self.logger)
           except Exception as e:
             self.logger.log(syslog.LOG_WARNING,
               'removing answer state of %s because of errors: %s' \
@@ -2261,8 +2268,6 @@ class PuavoErsAnswerReturn (threading.Thread):
 
 
   def mark_final_answers_as_final(self, all_answers_state):
-    logger.log(syslog.LOG_NOTICE, 'checking which answers are final')
-
     current_session_package_id = None
     session_state = self.exam_scheduler.get_session_state()
     if session_state:
@@ -2281,8 +2286,8 @@ class PuavoErsAnswerReturn (threading.Thread):
 
     for package_id, filename_list in exams_by_package_id.items():
       answers = [ [ f, all_answers_state[f] ] for f in filename_list ]
-      logger.log(syslog.LOG_NOTICE,     # XXX
-                 'answers which share a package id: %s' % answers)
+      self.logger.log(syslog.LOG_NOTICE,     # XXX
+                      'answers which share a package id: %s' % answers)
       sort_fn = lambda a: iso_as_timezoned(a[1]['saved_at'], self.logger)
       sorted_answers = sorted(answers, key=sort_fn)
       *first_answer_sets, last_answer_set = sorted_answers
@@ -2291,8 +2296,8 @@ class PuavoErsAnswerReturn (threading.Thread):
       for a in first_answer_sets:
         filename, answer_set = a
         if answer_set['is_final'] != 'false':
-          logger.log(syslog.LOG_NOTICE,
-                     'marking answers %s is not final' % answer_set)
+          self.logger.log(syslog.LOG_NOTICE,
+                          'marking answers %s is not final' % answer_set)
           answer_set['is_final'] = 'false'
 
       # the latest answer set is final in case the corresponding package id
@@ -2301,12 +2306,15 @@ class PuavoErsAnswerReturn (threading.Thread):
       if package_id != current_session_package_id:
           filename, answer_set = last_answer_set
           if answer_set['is_final'] != 'true':
-            logger.log(syslog.LOG_NOTICE,
-                       'marking answers %s is final' % filename)
+            self.logger.log(syslog.LOG_NOTICE,
+                            'marking answers %s is final' % filename)
             answer_set['is_final'] = 'true'
 
 
-  def return_answers(self):
+  def load_answers_with_init(self):
+    self.logger.log(syslog.LOG_DEBUG,
+                    'checking if there are any new answers to return')
+
     answer_files_fp = glob.glob( os.path.join(ANSWERS_DIR, '*.meb') )
     answer_files = [ os.path.basename(p) for p in answer_files_fp ]
     all_answers_state = self.load_answers_state()
@@ -2315,6 +2323,35 @@ class PuavoErsAnswerReturn (threading.Thread):
       if not af_name in all_answers_state:
         all_answers_state[af_name] = {}
 
+    for filename, answer_state in all_answers_state.items():
+      if not 'sent_at' in answer_state:
+        answer_state['sent_at'] = None
+      if not ('id' in answer_state and isinstance(answer_state['id'], str)):
+        answer_state['id'] = None
+        # Mark an answer set without a package id with is_final "unknown".
+        # Others will get "indeterminate" below.
+        answer_state['is_final'] = 'unknown'
+      if not ('latest_try' in answer_state \
+                and isinstance(answer_state['latest_try'], datetime.datetime)):
+        answer_state['latest_try'] = None
+      if not ('try_count' in answer_state \
+                and isinstance(answer_state['try_count'], int)):
+        answer_state['try_count'] = 0
+      if not ('is_final' in answer_state \
+                and isinstance(answer_state['is_final'], str)):
+        answer_state['is_final'] = 'indeterminate'
+
+    return all_answers_state
+
+
+  def return_answers(self):
+    # Take exam scheduler lock when checking out new answers, but release it
+    # for the sending phase so we do not interface with exam scheduler
+    # operations in case there are delays in sending the answers.
+    with exam_scheduler_lock:
+      self.logger.log(syslog.LOG_DEBUG, 'got exam scheduler lock')
+      all_answers_state = self.load_answers_with_init()
+    self.logger.log(syslog.LOG_DEBUG, 'released exam scheduler lock')
     self.mark_final_answers_as_final(all_answers_state)
 
     for filename, answerpackage_state in all_answers_state.items():
@@ -2330,25 +2367,8 @@ class PuavoErsAnswerReturn (threading.Thread):
 
 
   def handle_an_answer_return(self, filename, answer_state):
-    if not 'sent_at' in answer_state:
-      answer_state['sent_at'] = None
     if answer_state['sent_at']:
       return
-
-    if not ('id' in answer_state and isinstance(answer_state['id'], str)):
-      answer_state['id'] = None
-      # mark an answer set without a package id like this:
-      answer_state['is_final'] = 'unknown'
-
-    if not ('latest_try' in answer_state \
-              and isinstance(answer_state['latest_try'], datetime.datetime)):
-      answer_state['latest_try'] = None
-    if not ('try_count' in answer_state \
-              and isinstance(answer_state['try_count'], int)):
-      answer_state['try_count'] = 0
-    if not ('is_final' in answer_state \
-              and isinstance(answer_state['is_final'], str)):
-      answer_state['is_final'] = 'indeterminate'
 
     if answer_state['try_count'] == self.MAX_TRY_COUNT:
       self.logger.log(syslog.LOG_NOTICE,
@@ -2381,7 +2401,8 @@ class PuavoErsAnswerReturn (threading.Thread):
 
     sent_ok = False
     try:
-      self.send_an_answer_package(answer_state['id'], filename)
+      self.send_an_answer_package(answer_state['id'], filename,
+                                  answer_state['is_final'])
       sent_ok = True
       self.logger.log(syslog.LOG_NOTICE, 'sent %s to exam-o-matic' % filename)
     except Exception as e:
@@ -2394,7 +2415,7 @@ class PuavoErsAnswerReturn (threading.Thread):
                   .isoformat()
 
 
-  def send_an_answer_package(self, package_id, answers_filename):
+  def send_an_answer_package(self, package_id, answers_filename, is_final):
     answers_filename_path = os.path.join(ANSWERS_DIR, answers_filename)
 
     with open(answers_filename_path, 'rb') as f:
@@ -2407,8 +2428,7 @@ class PuavoErsAnswerReturn (threading.Thread):
         'answers_file': answers_filename,
         'file_sha256':  answers_file_sha256,
         'file_size':    answers_file_size,
-        'is_final':     "false", # XXX string, determine the correct value
-                                 # XXX maybe "unknown" is a valid one as well?
+        'is_final':     is_final,
         'package_id':   (package_id or ''),     # None drops out so use ''
       }
 
@@ -2420,7 +2440,7 @@ class PuavoErsAnswerReturn (threading.Thread):
   def save_answers_state(self, all_answers_state):
     converted_all_answers_state = copy.deepcopy(all_answers_state)
     for answer_state in converted_all_answers_state.values():
-      if 'latest_try' in answer_state:
+      if 'latest_try' in answer_state and answer_state['latest_try']:
         answer_state['latest_try'] = answer_state['latest_try'].isoformat()
     with self.answer_state_lock:
       save_as_json(self.ANSWERS_STATE_PATH, converted_all_answers_state)
@@ -2428,7 +2448,7 @@ class PuavoErsAnswerReturn (threading.Thread):
 
   def update_latest_on_answers_state(self, package_id, answers_filename):
     state = self.load_answers_state()
-    saved_at = datetime.datetime.now.replace(microsecond=0) \
+    saved_at = datetime.datetime.now().replace(microsecond=0) \
                        .astimezone().isoformat()
     state[answers_filename] = {
       'id':       package_id,
