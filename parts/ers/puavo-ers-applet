@@ -2268,7 +2268,7 @@ class PuavoErsAnswerReturn (threading.Thread):
 
 
   def mark_final_answers_as_final(self, all_answers_state):
-    current_session_package_id = None
+    currently_ongoing_session_package_id = None
     session_state = self.exam_scheduler.get_session_state()
     if session_state:
       currently_ongoing_session_package_id = session_state['package']['id']
@@ -2277,8 +2277,10 @@ class PuavoErsAnswerReturn (threading.Thread):
     for filename, answerpackage_state in all_answers_state.items():
       # when considering exam "finality", we do not bother with answer sets
       # that lack a package id
-      package_id = answerpackage_state['id']
+      package_id = answerpackage_state['package_id']
       if not package_id:
+        continue
+      if not 'saved_at' in answerpackage_state:
         continue
       if not package_id in exams_by_package_id:
         exams_by_package_id[package_id] = []
@@ -2286,9 +2288,7 @@ class PuavoErsAnswerReturn (threading.Thread):
 
     for package_id, filename_list in exams_by_package_id.items():
       answers = [ [ f, all_answers_state[f] ] for f in filename_list ]
-      self.logger.log(syslog.LOG_NOTICE,     # XXX
-                      'answers which share a package id: %s' % answers)
-      sort_fn = lambda a: iso_as_timezoned(a[1]['saved_at'], self.logger)
+      sort_fn = lambda a: iso_as_timezone(a[1]['saved_at'], self.logger)
       sorted_answers = sorted(answers, key=sort_fn)
       *first_answer_sets, last_answer_set = sorted_answers
       # if a package id has a newer answer set available, mark the older ones
@@ -2297,17 +2297,17 @@ class PuavoErsAnswerReturn (threading.Thread):
         filename, answer_set = a
         if answer_set['is_final'] != 'false':
           self.logger.log(syslog.LOG_NOTICE,
-                          'marking answers %s is not final' % answer_set)
+                          'marking answers %s as not final' % answer_set)
           answer_set['is_final'] = 'false'
 
       # the latest answer set is final in case the corresponding package id
       # is not running in an active session (current session package
       # id may be None here)
-      if package_id != current_session_package_id:
+      if package_id != currently_ongoing_session_package_id:
           filename, answer_set = last_answer_set
           if answer_set['is_final'] != 'true':
             self.logger.log(syslog.LOG_NOTICE,
-                            'marking answers %s is final' % filename)
+                            'marking answers %s as final' % filename)
             answer_set['is_final'] = 'true'
 
 
@@ -2326,8 +2326,9 @@ class PuavoErsAnswerReturn (threading.Thread):
     for filename, answer_state in all_answers_state.items():
       if not 'sent_at' in answer_state:
         answer_state['sent_at'] = None
-      if not ('id' in answer_state and isinstance(answer_state['id'], str)):
-        answer_state['id'] = None
+      if not ('package_id' in answer_state \
+                and isinstance(answer_state['package_id'], str)):
+        answer_state['package_id'] = None
         # Mark an answer set without a package id with is_final "unknown".
         # Others will get "indeterminate" below.
         answer_state['is_final'] = 'unknown'
@@ -2401,7 +2402,7 @@ class PuavoErsAnswerReturn (threading.Thread):
 
     sent_ok = False
     try:
-      self.send_an_answer_package(answer_state['id'], filename,
+      self.send_an_answer_package(answer_state['package_id'], filename,
                                   answer_state['is_final'])
       sent_ok = True
       self.logger.log(syslog.LOG_NOTICE, 'sent %s to exam-o-matic' % filename)
@@ -2421,6 +2422,7 @@ class PuavoErsAnswerReturn (threading.Thread):
     with open(answers_filename_path, 'rb') as f:
       files = { 'answers_file': f }
       answers_file_contents = f.read()
+      f.seek(0)
       answers_file_size = os.fstat( f.fileno() ).st_size
       answers_file_sha256 = hashlib.sha256(answers_file_contents).hexdigest()
 
@@ -2451,10 +2453,10 @@ class PuavoErsAnswerReturn (threading.Thread):
     saved_at = datetime.datetime.now().replace(microsecond=0) \
                        .astimezone().isoformat()
     state[answers_filename] = {
-      'id':       package_id,
-      'is_final': 'indeterminate',
-      'saved_at': saved_at,
-      'sent_at':  None,
+      'is_final':   'indeterminate',
+      'package_id': package_id,
+      'saved_at':   saved_at,
+      'sent_at':    None,
     }
     self.save_answers_state(state)
     msg = 'recorded new answer file %s is for package id %s' \
