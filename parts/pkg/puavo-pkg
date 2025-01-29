@@ -411,7 +411,10 @@ configure_pkg()
   pkg_link=$(get_pkg_link "$pkg_name") || return 1
 
   if [ -n "$installed_pkg_id" -a "$installed_pkg_id" != "$pkg_id" ]; then
-    unconfigure_pkg "$pkg_name"
+    if ! unconfigure_pkg "$pkg_name"; then
+      log_error "failed to unconfigure package '${pkg_name}'"
+      return 1
+    fi
   fi
 
   pushd "$pkg_dir" >/dev/null || return 1
@@ -442,7 +445,7 @@ reconfigure_pkg()
   check_puavopkg_name "$pkg_name" || return 1
   pkg_id=$(get_installed_pkg_id "$pkg_name") || return 1
 
-  configure_pkg "$pkg_name" "$pkg_id"
+  configure_pkg "$pkg_name" "$pkg_id" || return 1
 }
 
 reconfigure_all_pkgs()
