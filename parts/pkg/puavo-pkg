@@ -43,6 +43,7 @@ SC_OK=0         ## Success
 SC_ERR=1        ## Generic error
 SC_ERR_NET=2    ## Network failure
 SC_ERR_NOPKG=3  ## Package does not exist
+SC_ERR_BUSY=4   ## Software is busy, retry later
 
 g_sc=${SC_ERR} ## Prime with a generic error.
 
@@ -412,6 +413,7 @@ configure_pkg()
 
   if [ -n "$installed_pkg_id" -a "$installed_pkg_id" != "$pkg_id" ]; then
     if ! unconfigure_pkg "$pkg_name"; then
+      [ $? -eq "$SC_ERR_BUSY" ] && g_sc=${SC_ERR_BUSY}
       log_error "failed to unconfigure package '${pkg_name}'"
       return 1
     fi
@@ -464,7 +466,7 @@ reconfigure_all_pkgs()
 
 unconfigure_pkg()
 {
-  local pkg_name pkg_link pkg_dir upstream_dir
+  local errorcode pkg_name pkg_link pkg_dir upstream_dir
 
   pkg_name=$1
   check_puavopkg_name "$pkg_name" || return 1
@@ -477,9 +479,9 @@ unconfigure_pkg()
 
   pushd "$pkg_dir" >/dev/null || return 1
   ./rules unconfigure "$upstream_dir" >/dev/null || {
+    errorcode=$?
     popd > /dev/null 2>&1 || true
-    log_error "failed to unconfigure package '${pkg_name}'"
-    return 1
+    return $errorcode
   }
   popd > /dev/null 2>&1 || true
 
@@ -908,6 +910,7 @@ reconfigure_upgrade_pkg() {
 
   if [ -n "$old_pkg_id" -a "$old_pkg_id" != "$pkg_id" ]; then
     if ! unconfigure_pkg "$pkg_name"; then
+      [ $? -eq "$SC_ERR_BUSY" ] && g_sc=${SC_ERR_BUSY}
       log_error "failed to unconfigure package '${pkg_name}'"
       return 1
     fi
@@ -1001,7 +1004,9 @@ switch_to_system_pkg()
     done
     if $need_unconfigure; then
       if ! unconfigure_pkg "$pkg_name"; then
-        log_warning "failed to unconfigure package ${pkg_name}"
+        [ $? -eq "$SC_ERR_BUSY" ] && g_sc=${SC_ERR_BUSY}
+        log_error "failed to unconfigure package '${pkg_name}'"
+        return 1
       fi
     fi
   fi
@@ -1044,6 +1049,7 @@ remove_pkg()
   pkg_id=$(get_installed_pkg_id "$pkg_name") || return 1
   if [ -n "$pkg_id" ]; then
     unconfigure_pkg "$pkg_name" || {
+      [ $? -eq "$SC_ERR_BUSY" ] && g_sc=${SC_ERR_BUSY}
       log_error "failed to unconfigure package '${pkg_name}'"
       return 1
     }
@@ -1323,7 +1329,11 @@ case "${command}" in
     ;;
   unconfigure)
     assert_args_count -eq 1 "$@"
-    unconfigure_pkg "$1"
+    if ! unconfigure_pkg "$1"; then
+      [ $? -eq "$SC_ERR_BUSY" ] && g_sc=${SC_ERR_BUSY}
+      log_error "failed to unconfigure package '${pkg_name}'"
+      exit 1
+    fi
     ;;
   *)
     usage_error "unknown command '${command}'"
