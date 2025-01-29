@@ -644,7 +644,7 @@ download_upstream_pack()
     ./rules download "${upstream_tmppack}" || {
       [ $? -eq 2 ] && g_sc=${SC_ERR_NET}
       popd > /dev/null 2>&1 || true
-      rm -rf "$upstream_tmppack" || true
+      rm -f "$upstream_tmppack" || true
       log_error "package downloader returned an error!"
       return 1
     }
@@ -652,19 +652,19 @@ download_upstream_pack()
   else
     if ! download_upstream_pack_from_multiple_urls "$pkg_dir" \
                                                    "$upstream_tmppack"; then
-      rm -rf "$upstream_tmppack"
+      rm -f "$upstream_tmppack"
       return 1
     fi
   fi
 
   if ! check_cksum "${pkg_dir}/upstream_pack_sha384sum" "${upstream_tmppack}"; then
     log_error "downloaded upstream pack has incorrect checksum"
-    rm -rf "${upstream_tmppack}"
+    rm -f "${upstream_tmppack}"
     return 1
   fi
 
   if ! mv -T "$upstream_tmppack" "$upstream_pack"; then
-    rm -rf "$upstream_pack"
+    rm -f "$upstream_pack"
     return 1
   fi
 
