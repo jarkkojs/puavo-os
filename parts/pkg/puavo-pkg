@@ -480,6 +480,9 @@ unconfigure_pkg()
   pushd "$pkg_dir" >/dev/null || return 1
   ./rules unconfigure "$upstream_dir" >/dev/null || {
     errorcode=$?
+    if [ "$errorcode" -eq "$SC_ERR_BUSY" ]; then
+      log_warning "${pkg_name}: application is busy, retry unconfigure later"
+    fi
     popd > /dev/null 2>&1 || true
     return $errorcode
   }
