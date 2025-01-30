@@ -138,7 +138,10 @@ configure_latest_from() {
             install:*) echo "ignoring version in puavo.pkg.${pkg_name}" ;;
           esac
 
-          reconfigure_upgrade_pkg "$pkg_name" "$other_pkgid_dir" || status=1
+          # ignore unconfigure errors from old package, as we are booting
+          # and should be able to upgrade packages with broken unconfigure
+          reconfigure_upgrade_pkg --ignore-unconfigure-error "$pkg_name" \
+            "$other_pkgid_dir" || status=1
           ;;
       esac
   fi
