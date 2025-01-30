@@ -405,21 +405,12 @@ configure_pkg()
   pkg_dir=$(get_pkg_dir "$pkg_name" "$pkg_id") || return 1
 
   if [ ! -e "${pkg_dir}/.puavo-pkg-version" ]; then
-    log_error "not configuring ${pkg_name}, it is missing version info"
+    log_error "${pkg_name}: not configuring, missing version info"
     return 1
   fi
 
   upstream_dir="${pkg_dir}/upstream"
-  installed_pkg_id=$(get_installed_pkg_id "$pkg_name") || return 1
   pkg_link=$(get_pkg_link "$pkg_name") || return 1
-
-  if [ -n "$installed_pkg_id" -a "$installed_pkg_id" != "$pkg_id" ]; then
-    if ! unconfigure_pkg "$pkg_name"; then
-      [ $? -eq "$SC_ERR_BUSY" ] && g_sc=${SC_ERR_BUSY}
-      log_error "failed to unconfigure package '${pkg_name}'"
-      return 1
-    fi
-  fi
 
   pushd "$pkg_dir" >/dev/null || return 1
   ./rules configure "$upstream_dir" || {
@@ -454,6 +445,11 @@ reconfigure_pkg()
   check_puavopkg_name "$pkg_name" || return 1
   pkg_id=$(get_installed_pkg_id "$pkg_name") || return 1
 
+  if ! unconfigure_pkg "$pkg_name"; then
+    log_error "${pkg_name}: failed to unconfigure"
+    return 1
+  fi
+
   configure_pkg "$pkg_name" "$pkg_id" || return 1
 }
 
@@ -473,13 +469,18 @@ reconfigure_all_pkgs()
 
 unconfigure_pkg()
 {
-  local errorcode pkg_name pkg_link pkg_dir upstream_dir
+  local errorcode pkg_dir pkg_id pkg_link pkg_name upstream_dir
 
   pkg_name=$1
+  pkg_id=${2:-}
   check_puavopkg_name "$pkg_name" || return 1
 
   pkg_link=$(get_pkg_link "$pkg_name") || return 1
-  pkg_dir=$(readlink -e "$pkg_link") || true
+  if [ -n "$pkg_id" ]; then
+    pkg_dir=$(get_pkg_dir "$pkg_name" "$pkg_id") || return 1
+  else
+    pkg_dir=$(readlink -e "$pkg_link") || true
+  fi
   upstream_dir="${pkg_dir}/upstream"
 
   [ -n "$pkg_dir" ] || return 0
@@ -935,6 +936,10 @@ reconfigure_upgrade_pkg() {
     # if configuration fails, try to reconfigure the old version again
     log_error "${pkg_name}: failed to configure package version '${pkg_id}'"
     if [ -n "$old_pkg_id" -a "$old_pkg_id" != "$pkg_id" ]; then
+      log_info "${pkg_name}: reverting to previous version '${old_pkg_id}'"
+      if ! unconfigure_pkg "$pkg_name" "$pkg_id"; then
+        log_warning "${pkg_name}: unconfiguring version '${pkg_id}' failed"
+      fi
       if ! configure_pkg "$pkg_name" "$old_pkg_id"; then
         log_error "${pkg_name}: failed to reconfigure the previous" \
                   "version '${old_pkg_id}'"
