@@ -427,6 +427,11 @@ configure_pkg()
   }
   popd > /dev/null 2>&1 || true
 
+  # test with -e for faster (typical) execution
+  if [ -e "${pkg_dir}/.upgrade_failed_due_to_old_pkg_unconfigure" ]; then
+    rm -f "${pkg_dir}/.upgrade_failed_due_to_old_pkg_unconfigure" || true
+  fi
+
   ln -fns "$pkg_dir" "${g_puavo_pkg_available_dir}/${pkg_name}" || {
     log_error "failed to create an available package link"
     return 1
@@ -914,6 +919,7 @@ reconfigure_upgrade_pkg() {
   if [ -n "$old_pkg_id" -a "$old_pkg_id" != "$pkg_id" ]; then
     if ! unconfigure_pkg "$pkg_name"; then
       [ $? -eq "$SC_ERR_BUSY" ] && g_sc=${SC_ERR_BUSY}
+      touch "${pkg_dir}/.upgrade_failed_due_to_old_pkg_unconfigure" || true
       log_error "failed to unconfigure package '${pkg_name}'"
       return 1
     fi
@@ -948,7 +954,7 @@ install_pkg_with_installer()
 
   reconfigure_upgrade_pkg "$pkg_name" "$pkg_dir" || return 1
 
-  touch "${pkg_dir}/.installed"
+  touch "${pkg_dir}/.installed" || true
 
   log_info "${pkg_name}: installed successfully"
 
@@ -1059,6 +1065,7 @@ remove_pkg()
     pkg_dir=$(get_writable_pkg_dir "$pkg_name" "$pkg_id") || return 1
     rm -rf "${pkg_dir}/.installed" \
            "${pkg_dir}/.prepared"  \
+           "${pkg_dir}/.upgrade_failed_due_to_old_pkg_unconfigure" \
            "${pkg_dir}/upstream" || return 1
     purge_local_pkg "$pkg_name" || return 1
     log_info "removed package '${pkg_name}'"
