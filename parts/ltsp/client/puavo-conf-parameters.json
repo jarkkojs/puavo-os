@@ -30,7 +30,7 @@
     "typehint": "bool"
   },
   "puavo.admin.superusers": {
-    "choices": [ "", "primary-user", "user-registration" ],
+    "choices": [ "", "limited-primary-user", "primary-user-is-super", "user-registration" ],
     "default": "",
     "description": "System configuration mode for superuser permissions",
     "typehint": "string"
