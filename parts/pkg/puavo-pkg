@@ -434,6 +434,8 @@ configure_pkg()
     return 1
   }
 
+  touch "${pkg_dir}/.installed" || true
+
   log_info "${pkg_name}: configured successfully" || true
 }
 
@@ -495,6 +497,8 @@ unconfigure_pkg()
     return $errorcode
   }
   popd > /dev/null 2>&1 || true
+
+  rm -f "${pkg_dir}/.installed" || true
 
   rm -f "$pkg_link" || return 1
 
@@ -965,8 +969,6 @@ install_pkg_with_installer()
   old_pkg_id=$(get_installed_pkg_id "$pkg_name") || return 1
 
   reconfigure_upgrade_pkg "$pkg_name" "$pkg_dir" false || return 1
-
-  touch "${pkg_dir}/.installed" || true
 
   log_info "${pkg_name}: installed successfully"
 
