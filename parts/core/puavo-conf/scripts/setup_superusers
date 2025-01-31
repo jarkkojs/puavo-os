@@ -40,6 +40,7 @@ ${primary_user} ALL = NOPASSWD: /usr/sbin/puavo-conf-local
 EOF
     else
       cat <<EOF > "${primary_user_conf_path}.tmp"
+${primary_user} ALL = /usr/sbin/puavo-reset-laptop-to-factory-defaults
 ${primary_user} ALL = NOPASSWD: /usr/sbin/puavo-pkg-update-from-gui
 ${primary_user} ALL = NOPASSWD: /usr/sbin/puavo-conf-local
 EOF
