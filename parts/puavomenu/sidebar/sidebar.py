@@ -239,7 +239,7 @@ class Sidebar:
             ypos = self.__create_button(ypos, SB_BUTTONS["system_settings"])
             something = True
 
-        if self.__settings.is_user_primary_user:
+        if self.__settings.is_user_primary_user or self.__settings.user_type == "admin":
             if self.is_element_visible("laptop_settings"):
                 ypos = self.__create_button(ypos, SB_BUTTONS["laptop_settings"])
                 something = True
