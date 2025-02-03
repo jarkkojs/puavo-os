@@ -798,6 +798,7 @@ class packages {
     , 'jhead'
     , 'kamoso'
     , 'kde-spectacle'
+    , 'libheif-examples'  # CLI-tools for converting HEIF media.
     , 'mc'
     , 'mousepad'
     , 'p7zip-full'
