@@ -52,8 +52,6 @@ while true; do
             exit $status
         }
         break
-        # No user programs monitoring here. If you want to monitor a specific
-        # directory, run monitor-userprogs yourself.
     else
         # Production mode. Use real paths.
         python3 /opt/puavomenu/puavomenu \
