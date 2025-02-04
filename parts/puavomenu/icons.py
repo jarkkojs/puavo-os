@@ -314,33 +314,37 @@ def get_user_icon_dirs():
     # the icon directories listed in dirs.json are manually sorted by
     # preference.
 
-    user_icons_root = os.path.join(os.path.expanduser("~"), ".local", "share", "icons")
+    user_icons_root = [
+        os.path.join(os.path.expanduser("~"), ".local", "share", "icons"),
+        os.path.join(os.path.expanduser("~"), ".local", "share", "flatpak")
+    ]
 
     number_extractor = re.compile(r"\d+")
     dirs = []
 
-    for dir_tuple in os.walk(user_icons_root):
-        name = dir_tuple[0]
-        size = -1
-
-        try:
-            # extract SIZE from ".local/share/icons/SIZExSIZE/..."
-            result = number_extractor.search(name)
-
-            if result:
-                group = result.group(0)
-
-                if group:
-                    size = int(group)
-        except BaseException as e:
-            logging.warning(
-                'list_user_icon_dirs(): could not extract icon size from "%s": %s',
-                name,
-                str(e),
-            )
+    for roots in user_icons_root:
+        for dir_tuple in os.walk(roots):
+            name = dir_tuple[0]
             size = -1
 
-        dirs.append((size, name))
+            try:
+                # extract SIZE from ".local/share/icons/SIZExSIZE/..."
+                result = number_extractor.search(name)
+
+                if result:
+                    group = result.group(0)
+
+                    if group:
+                        size = int(group)
+            except BaseException as e:
+                logging.warning(
+                    'list_user_icon_dirs(): could not extract icon size from "%s": %s',
+                    name,
+                    str(e),
+                )
+                size = -1
+
+            dirs.append((size, name))
 
     return sorted(dirs, key=lambda i: i[0], reverse=True)
 
