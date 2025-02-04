@@ -856,10 +856,11 @@ rule {
 }
 
 rule {
-  # Only organisation owners can modify admin user special permissions
-  # (and others can not even read them, except self if self is an admin).
+  # Only organisation owners can modify admin and teacher user special
+  # permissions (and others can not even read them, except self if self is
+  # an admin).
   [dn subtree $People]
-    [attrs puavoAdminPermissions]
+    [attrs puavoAdminPermissions puavoTeacherPermissions]
       by $org_owners write
       by $selfadmins read
 }
