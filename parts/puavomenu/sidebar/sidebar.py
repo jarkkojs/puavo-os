@@ -63,7 +63,7 @@ class Sidebar:
         self.container.set_size_request(dims.sidebar_width, dims.sidebar_height)
 
         # Storage for the command button icons
-        self.__icons = icons.IconCache(128, dims.sidebar_button_icon_size)
+        self.__icons = icons.IconCache(160, dims.sidebar_button_icon_size)
 
         # Which sidebar elements are *unconditionally* hidden through puavo-conf?
         # These override EVERYTHING else!
