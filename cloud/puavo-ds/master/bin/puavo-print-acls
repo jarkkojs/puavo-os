@@ -878,6 +878,7 @@ rule {
       by $org_owners         write
       by $this_school_admins write
       by $selfteachers       read
+      by [puavo_dn puavo]    read
 }
 
 # Give hosts access to owner information (so that org.json can contain
