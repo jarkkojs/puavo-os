@@ -203,7 +203,7 @@ settings.user_conf = os.path.join(args.user_conf, "")
 settings.socket = args.socket
 
 logging.info("Logging starts")
-logging.info("This is PuavoMenu v0.9 (c) Opinsys Oy 2017-2020")
+logging.info("This is PuavoMenu v1.0 (c) Opinsys Oy 2017-2025")
 
 # Detect the non-configurable settings
 settings.detect_environment()
