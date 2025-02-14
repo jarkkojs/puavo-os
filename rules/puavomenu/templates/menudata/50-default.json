@@ -490,6 +490,15 @@
         "idle-python3.11": {
             "tags": "default"
         },
+        "inuvika-excel": {
+            "tags": "default"
+        },
+        "inuvika-powerpoint": {
+            "tags": "default"
+        },
+        "inuvika-word": {
+            "tags": "default"
+        },
         "io.github.wxmaxima_developers.wxMaxima": {
             "tags": "default",
             "keywords": "digabi"
@@ -2374,6 +2383,9 @@
                 "ica-word",
                 "ica-excel",
                 "ica-powerpoint",
+                "inuvika-word",
+                "inuvika-excel",
+                "inuvika-powerpoint",
                 "eva-warenwirtschaft",
                 "MetaSearch9",
                 "projectlibre",
