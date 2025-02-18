@@ -236,8 +236,7 @@ dpkg_buildflags_hs += dpkg-buildflags
 export EXTRA_CPPFLAGS_HS := $(shell $(dpkg_buildflags_hs) --get CPPFLAGS)
 export EXTRA_CFLAGS_HS   := $(shell $(dpkg_buildflags_hs) --get CFLAGS; $(dpkg_buildflags_hs) --get CPPFLAGS)
 export EXTRA_CXXFLAGS_HS := $(shell $(dpkg_buildflags_hs) --get CXXFLAGS) -Wno-deprecated-declarations
-# --no-as-needed to fix runtime problems in dlopen as described in https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=1031521
-export EXTRA_LDFLAGS_HS  := $(shell $(dpkg_buildflags_hs) --get LDFLAGS) -Wl,--no-as-needed
+export EXTRA_LDFLAGS_HS  := $(shell $(dpkg_buildflags_hs) --get LDFLAGS)
 
 dpkg_buildflags_zero = \
 	DEB_BUILD_MAINT_OPTIONS="optimize=-lto" \
@@ -253,8 +252,7 @@ dpkg_buildflags_zero += dpkg-buildflags
 export EXTRA_CPPFLAGS_ZERO := $(shell $(dpkg_buildflags_zero) --get CPPFLAGS)
 export EXTRA_CFLAGS_ZERO   := $(shell $(dpkg_buildflags_zero) --get CFLAGS; $(dpkg_buildflags_zero) --get CPPFLAGS)
 export EXTRA_CXXFLAGS_ZERO := $(shell $(dpkg_buildflags_zero) --get CXXFLAGS)
-# --no-as-needed to fix runtime problems in dlopen as described in https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=1031521
-export EXTRA_LDFLAGS_ZERO  := $(shell $(dpkg_buildflags_zero) --get LDFLAGS) -Wl,--no-as-needed
+export EXTRA_LDFLAGS_ZERO  := $(shell $(dpkg_buildflags_zero) --get LDFLAGS)
 
 ifeq ($(DEB_HOST_ARCH),alpha)
   export EXTRA_LDFLAGS_ZERO += -Wl,--no-relax
@@ -271,8 +269,7 @@ dpkg_buildflags_jdk += dpkg-buildflags
 export EXTRA_CPPFLAGS_JDK := $(shell $(dpkg_buildflags_jdk) --get CPPFLAGS)
 export EXTRA_CFLAGS_JDK   := $(shell $(dpkg_buildflags_jdk) --get CFLAGS) $(shell $(dpkg_buildflags_jdk) --get CPPFLAGS)
 export EXTRA_CXXFLAGS_JDK := $(shell $(dpkg_buildflags_jdk) --get CXXFLAGS)
-# --no-as-needed to fix runtime problems in dlopen as described in https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=1031521
-export EXTRA_LDFLAGS_JDK  := $(shell $(dpkg_buildflags_jdk) --get LDFLAGS) -Wl,--no-as-needed
+export EXTRA_LDFLAGS_JDK  := $(shell $(dpkg_buildflags_jdk) --get LDFLAGS)
 
 #for IcedTea
 dpkg_buildflags_it = \
@@ -285,8 +282,7 @@ dpkg_buildflags_it += dpkg-buildflags
 export EXTRA_CPPFLAGS_IT := $(shell $(dpkg_buildflags_it) --get CPPFLAGS)
 export EXTRA_CFLAGS_IT   := $(shell $(dpkg_buildflags_it) --get CFLAGS)
 export EXTRA_CXXFLAGS_IT := $(shell $(dpkg_buildflags_it) --get CXXFLAGS)
-# --no-as-needed to fix runtime problems in dlopen as described in https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=1031521
-export EXTRA_LDFLAGS_IT  := $(shell $(dpkg_buildflags_it) --get LDFLAGS) -Wl,--no-as-needed
+export EXTRA_LDFLAGS_IT  := $(shell $(dpkg_buildflags_it) --get LDFLAGS)
 
 # This section should be in sync with "bd_gcc" definition
 ifneq (,$(filter $(distrel),saucy))
@@ -414,10 +410,12 @@ COMMON_CONFIGURE_ARGS =
 DEFAULT_CONFIGURE_ARGS =
 ZERO_CONFIGURE_ARGS =
 
-# S390x does not support dtrace probes
+no_dtrace_archs = powerpc ppc64 ppc64el sh4 s390x
+
+# PPC*, S390x and SH do not support dtrace probes
 # https://github.com/openjdk/jdk/pull/13228
-ifeq (,$(filter $(DEB_HOST_ARCH), powerpc ppc64 ppc64el s390x))
-  CONFIGURE_ARGS += --enable-dtrace
+ifeq (,$(filter $(DEB_HOST_ARCH),$(no_dtrace_archs)))
+  COMMON_CONFIGURE_ARGS += --enable-dtrace
 endif
 
 # FIXME: --with-jvm-variants=server,zero not supported upstream
@@ -706,7 +704,7 @@ ifeq ($(with_nss),yes)
     bd_nss = libnss3-dev (>= 2:3.17.1),
   endif
 endif
-bd_systemtap = systemtap-sdt-dev [!powerpc !ppc64 !ppc64el !sh4 !s390x],
+bd_systemtap = systemtap-sdt-dev [$(foreach a,$(no_dtrace_archs),!$(a))],
 
 ifeq (,$(filter $(distrel),jessie stretch buster precise trusty xenial bionic focal groovy))
   with_debugedit = yes
@@ -1132,22 +1130,39 @@ stamps/build: stamps/configure
 ifneq (,$(filter $(DEB_HOST_ARCH), alpha armel armhf ia64 loong64 m68k mips mipsel mips64 mips64el powerpc powerpcspe riscv64 s390x sh4 sparc sparc64))
 	sh -c 'sh debian/buildwatch.sh $(CURDIR)/$(builddir) &'
 endif
-	if $(EXTRA_BUILD_ENV) $(MAKE) -C $(builddir) $(build_target); then \
-	  : ; \
-	else \
-	  if [ -f buildwatch.pid ]; then \
-	    pid=$$(cat buildwatch.pid); \
-	    kill -1 $$pid || :; sleep 1; kill -9 $$pid || :; \
-	  fi; \
-	  false; \
-	fi
+	$(EXTRA_BUILD_ENV) $(MAKE) --no-print-directory -C $(builddir) $(build_target); \
+	rv=$$?; \
+	for log in `find $(builddir) -name 'hs_err_pid*.log' -o -name 'replay_pid*.log'`; do \
+	  [ -f $$log ] || continue; \
+	  echo "=== $$log ==="; \
+	  cat $$log; \
+	  echo "======"; \
+	done; \
+	if [ -f buildwatch.pid ]; then \
+	  pid=$$(cat buildwatch.pid); \
+	  kill -1 $$pid || :; sleep 1; kill -9 $$pid || :; \
+	fi; \
+	exit $$rv
 
 	touch $@
 
 stamps/zero-build: stamps/zero-configure
 	@echo '========== $@ =========='
 	: # FIXME: build using the just built jdk, and build the vm only
-	$(EXTRA_BUILD_ENV) $(MAKE) -C $(zbuilddir) $(zbuild_target)
+	$(EXTRA_BUILD_ENV) $(MAKE) --no-print-directory -C $(zbuilddir) $(zbuild_target); \
+	rv=$$?; \
+	for log in `find $(zbuilddir) -name 'hs_err_pid*.log' -o -name 'replay_pid*.log'`; do \
+	  [ -f $$log ] || continue; \
+	  echo "=== $$log ==="; \
+	  cat $$log; \
+	  echo "======"; \
+	done; \
+	if [ -f buildwatch.pid ]; then \
+	  pid=$$(cat buildwatch.pid); \
+	  kill -1 $$pid || :; sleep 1; kill -9 $$pid || :; \
+	fi; \
+	exit $$rv
+
 	rm -rf $(builddir)/$(sdkimg)/lib/zero
 	cp -a $(zbuilddir)/$(zsdkimg)/lib/server \
 		$(builddir)/$(sdkimg)/lib/zero
@@ -1942,7 +1957,7 @@ endif
 	dh_builddeb -a $(nodemo) $(nojrez) #$(bd_options)
 
 git_project		= jdk11u
-git_tag			= jdk-11.0.25+9
+git_tag			= jdk-11.0.26+4
 package_version		= $(subst jdk-,,$(git_tag))
 package_version		= $(shell echo $(PKGVERSION) | sed 's/-[^-][^-]*$$//')
 ifneq ($(is_upstream_release),yes)

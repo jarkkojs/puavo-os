@@ -1,8 +1,37 @@
-openjdk-11 (11.0.25+9-1~deb11u1+puavo1) bullseye; urgency=medium
+openjdk-11 (11.0.26+4-1~deb11u1) bullseye-security; urgency=medium
 
-  * Build with our patches.
+  * Non-maintainer upload by the LTS Team.
+  * Backport to bullseye.
 
- -- Puavo Org <dev@opinsys.fi>  Fri, 15 Sep 2023 14:24:12 +0300
+ -- Emilio Pozuelo Monfort <pochu@debian.org>  Fri, 31 Jan 2025 11:11:08 +0100
+
+openjdk-11 (11.0.26+4-1) unstable; urgency=medium
+
+  * OpenJDK 11.0.26 release, build 4. Release notes:
+    https://mail.openjdk.org/pipermail/jdk-updates-dev/2025-January/040826.html
+
+    - CVEs:
+      +  CVE-2025-21502 - 8330045: Enhance array handling.
+
+  [ Matthias Klose ]
+  * Bump standards version.
+  * d/rules: Also dump logs for zero builds and for build failures.
+
+  [ Vladimir Petko ]
+  * d/rules: Dump complete hs_err_pid and replay_pid logs to stdout.
+  * d/t/problems.csv: Add openjdk-24 and openjdk-25 to the problems.csv.
+  * d/{watch,copyright}: Regenerate.
+
+ -- Matthias Klose <doko@ubuntu.com>  Wed, 22 Jan 2025 11:26:00 +0100
+
+openjdk-11 (11.0.26~6ea-1) unstable; urgency=medium
+
+  * OpenJDK 11.0.26+3 build (early access).
+
+  [ Pushkar Kulkarni ]
+  * d/t/problems.csv: Update based on recent JTREG runs.
+
+ -- Matthias Klose <doko@ubuntu.com>  Fri, 20 Dec 2024 11:23:17 +0100
 
 openjdk-11 (11.0.25+9-1~deb11u1) bullseye-security; urgency=medium
 

@@ -17,7 +17,7 @@ Build-Depends: @bd_debhelper@
   @bd_nss@
   @bd_cross@
 Build-Depends-Indep: graphviz, pandoc,
-Standards-Version: 4.6.2
+Standards-Version: 4.7.0
 Rules-Requires-Root: no
 Homepage: https://openjdk.java.net/
 Vcs-Browser: https://salsa.debian.org/openjdk-team/openjdk/tree/openjdk-11
