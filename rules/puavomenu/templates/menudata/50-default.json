@@ -528,6 +528,9 @@
         "kantti": {
             "tags": "default, education"
         },
+        "kdenlive-appimage": {
+            "tags": "default, education"
+        },
         "kenavision": {
             "type": "custom",
             "command": "/opt/av4kav/lib/av4.sh",
@@ -1861,6 +1864,7 @@
                 "com.obsproject.Studio",
                 "org.openshot.OpenShot",
                 "org.kde.kdenlive",
+                "kdenlive-appimage",
                 "org.pitivi.Pitivi",
                 "org.shotcut.Shotcut",
                 "solfege",
