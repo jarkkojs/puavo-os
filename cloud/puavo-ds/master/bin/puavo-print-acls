@@ -576,6 +576,7 @@ rule {
   [dn exact $Groups]
     [attrs children entry objectClass ou]
       by $org_owners             read
+      by [puavo_dn puavo]        read
       by [puavo_dn statistics]   read
       by [dn children $People]   read
       by [dn children $Hosts]    read
