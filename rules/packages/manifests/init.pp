@@ -192,7 +192,8 @@ class packages {
     , 'x11vnc'
     , 'xvfb'
     , 'xbacklight'
-    , 'xinput-calibrator' ]:
+    , 'xinput-calibrator'
+    , 'zsh' ]:
       tag => [ 'tag_admin', 'tag_debian_desktop', ];
 
     [ 'espeak-ng'
