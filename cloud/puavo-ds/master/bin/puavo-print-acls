@@ -820,6 +820,7 @@ rule {
            jpegPhoto                   \
            loginShell                  \
            mail                        \
+           modifyTimestamp             \
            objectClass                 \
            preferredLanguage           \
            puavoAcceptedTerms          \
