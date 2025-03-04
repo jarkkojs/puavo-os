@@ -806,7 +806,7 @@ rule {
       by *                   none break
 }
 
-# rules needed by puavo and pw-mgmt (password management user)
+# rules needed by puavo (user account used by puavo-web and puavo-rest)
 # XXX Not sure why these are needed or if puavo and pw-mgmt need a
 # XXX matching set of attributes, but ACL tests explicitly tests for
 # XXX most of these.
@@ -823,6 +823,7 @@ rule {
            objectClass                 \
            preferredLanguage           \
            puavoAcceptedTerms          \
+           puavoAdminOfSchool          \
            puavoEduPersonAffiliation   \
            puavoEduPersonPrimarySchool \
            puavoExternalData           \
